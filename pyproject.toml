@@ -12,4 +12,4 @@ dependencies = [
 ]
 
 [tool.uv.extra-build-dependencies]
-sox = ["setuptools"]
+flash-attn = ["torch"]
