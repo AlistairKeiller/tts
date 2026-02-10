@@ -10,3 +10,6 @@ dependencies = [
     "soundfile>=0.13.1",
     "flash-attn>=2.8.3",
 ]
+
+[tool.uv.extra-build-dependencies]
+sox = ["setuptools"]
