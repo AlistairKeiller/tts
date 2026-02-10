@@ -1,14 +1,17 @@
 [project]
 name = "tts"
 version = "0.1.0"
-description = "Add your description here"
+description = "Convert EPUB e-books to M4B audiobooks via Qwen3-TTS"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "beautifulsoup4>=4.12",
+    "chonkie>=1.5",
     "ebooklib>=0.20",
+    "ffmpeg-python>=0.2",
     "qwen-tts>=0.1.1",
     "soundfile>=0.13.1",
-    "flash-attn>=2.8.3",
+    "typer>=0.15",
 ]
 
 [tool.uv.extra-build-dependencies]
