@@ -9,6 +9,7 @@ dependencies = [
     "chonkie>=1.5",
     "ebooklib>=0.20",
     "ffmpeg-python>=0.2",
+    "numba>=0.61",
     "qwen-tts>=0.1.1",
     "soundfile>=0.13.1",
     "typer>=0.15",

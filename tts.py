@@ -13,20 +13,29 @@ log = logging.getLogger(__name__)
 chunker = SentenceChunker(tokenizer="character", chunk_size=500, chunk_overlap=0)
 
 
+def _detect_device() -> str:
+    if torch.cuda.is_available():
+        return "cuda:0"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 def synthesise_chapters(
     chapters: list[Chapter],
     output_dir: Path,
     *,
     speaker: str = "Aiden",
-    device: str = "cuda:0",
 ) -> list[Path]:
     """Generate one WAV per chapter, return list of paths."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    attn = "flash_attention_2" if torch.cuda.is_available() else "eager"
+    device = _detect_device()
+    log.info("Using device: %s", device)
+    attn = "flash_attention_2" if device.startswith("cuda") else "eager"
     model = Qwen3TTSModel.from_pretrained(
         "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
-        device_map=device if torch.cuda.is_available() else "cpu",
+        device_map=device,
         dtype=torch.bfloat16,
         attn_implementation=attn,
     )

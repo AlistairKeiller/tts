@@ -20,7 +20,6 @@ def main(
         Optional[Path], typer.Option("-o", help="Output .m4b path.")
     ] = None,
     speaker: Annotated[str, typer.Option(help="Speaker voice.")] = "Aiden",
-    device: Annotated[str, typer.Option(help="Torch device.")] = "cuda:0",
     bitrate: Annotated[str, typer.Option(help="AAC bitrate.")] = "64k",
 ) -> None:
     """Convert an EPUB to an M4B audiobook."""
@@ -33,7 +32,7 @@ def main(
     assert chapters, "No chapters found in EPUB"
 
     wav_dir = Path(tempfile.mkdtemp(prefix="epub2ab_"))
-    wav_paths = synthesise_chapters(chapters, wav_dir, speaker=speaker, device=device)
+    wav_paths = synthesise_chapters(chapters, wav_dir, speaker=speaker)
 
     out = output or epub.with_suffix(".m4b")
     build_m4b(
