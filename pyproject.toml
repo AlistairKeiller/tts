@@ -8,4 +8,5 @@ dependencies = [
     "ebooklib>=0.20",
     "qwen-tts>=0.1.1",
     "soundfile>=0.13.1",
+    "flash-attn>=2.8.3",
 ]
