@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "epub2audiobook"
+version = "0.1.0"
+description = "Convert EPUB e-books to M4B audiobooks using Qwen3-TTS"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "ebooklib>=0.18",
+    "soundfile>=0.12",
+    "numpy",
+    "torch>=2.1",
+    "`qwen-tts`",
+]
+
+[project.scripts]
+epub2audiobook = "epub2audiobook.main:main"
