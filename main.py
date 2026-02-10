@@ -107,7 +107,7 @@ def main(argv: list[str] | None = None) -> None:
     }
 
     # --- Step 1: Parse EPUB ---
-    from epub_parser import parse_epub  # noqa: local import to defer heavy deps
+    from epub_parser import parse_epub
 
     log.info("Parsing EPUB: %s", args.epub)
     chapters = parse_epub(str(args.epub))
@@ -115,6 +115,11 @@ def main(argv: list[str] | None = None) -> None:
         log.error("No chapters found in the EPUB.")
         sys.exit(1)
     log.info("Found %d chapter(s).", len(chapters))
+
+    # Fail fast if ffmpeg is missing (before the expensive TTS step)
+    from m4b import build_m4b, check_ffmpeg
+
+    check_ffmpeg()
 
     # --- Step 2: Synthesise audio ---
     from tts import synthesise_chapters
@@ -142,9 +147,6 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
     # --- Step 3: Build M4B ---
-    from m4b import build_m4b
-
-    # Align titles to the WAV files that were actually produced
     titles = [ch.title for ch in chapters[: len(wav_paths)]]
 
     log.info("Building M4B: %s", output_path)

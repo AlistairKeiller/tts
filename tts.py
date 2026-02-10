@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import re
 import logging
+import re
 from pathlib import Path
 
 import numpy as np
@@ -15,15 +15,16 @@ from epub_parser import Chapter
 
 logger = logging.getLogger(__name__)
 
-# Qwen3-TTS can handle long text but very long passages may OOM.
-# We split into chunks of roughly this many characters.
 _MAX_CHARS = 500
+_BATCH_SIZE = 4  # chunks per batch call – tune for your VRAM
+_SENTENCE_RE = re.compile(r"(?<=[.!?。！？])\s+")
+_CLAUSE_RE = re.compile(r"(?<=[,;:，；：])\s+")
 
 
 def _split_text(text: str, max_chars: int = _MAX_CHARS) -> list[str]:
-    """Split text into chunks on sentence boundaries."""
-    # Split on sentence-ending punctuation followed by whitespace
-    sentences = re.split(r"(?<=[.!?。！？])\s+", text)
+    """Split *text* into chunks of ≤ *max_chars* on sentence boundaries,
+    falling back to clause boundaries for oversized sentences."""
+    sentences = _SENTENCE_RE.split(text)
     chunks: list[str] = []
     buf: list[str] = []
     length = 0
@@ -31,10 +32,24 @@ def _split_text(text: str, max_chars: int = _MAX_CHARS) -> list[str]:
         sent = sent.strip()
         if not sent:
             continue
+        # If a single sentence exceeds the limit, break on clauses
+        if len(sent) > max_chars:
+            if buf:
+                chunks.append(" ".join(buf))
+                buf, length = [], 0
+            for clause in _CLAUSE_RE.split(sent):
+                clause = clause.strip()
+                if not clause:
+                    continue
+                if length + len(clause) > max_chars and buf:
+                    chunks.append(" ".join(buf))
+                    buf, length = [], 0
+                buf.append(clause)
+                length += len(clause)
+            continue
         if length + len(sent) > max_chars and buf:
             chunks.append(" ".join(buf))
-            buf = []
-            length = 0
+            buf, length = [], 0
         buf.append(sent)
         length += len(sent)
     if buf:
@@ -52,28 +67,9 @@ def synthesise_chapters(
     instruct: str = "",
     device: str = "cuda:0",
     dtype: torch.dtype = torch.bfloat16,
+    batch_size: int = _BATCH_SIZE,
 ) -> list[Path]:
-    """Generate a WAV file per chapter and return the list of paths.
-
-    Parameters
-    ----------
-    chapters : list[Chapter]
-        Parsed chapters from the EPUB.
-    output_dir : Path
-        Directory to write intermediate WAV files.
-    model_name : str
-        HuggingFace model id or local path.
-    speaker : str
-        Speaker name (see ``model.get_supported_speakers()``).
-    language : str
-        Target language, or ``"Auto"`` for auto-detection.
-    instruct : str
-        Optional style instruction (e.g. "Read calmly like an audiobook narrator.").
-    device : str
-        Torch device string.
-    dtype : torch.dtype
-        Model precision.
-    """
+    """Generate a WAV file per chapter and return the list of paths."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("Loading Qwen3-TTS model %s …", model_name)
@@ -85,9 +81,20 @@ def synthesise_chapters(
         attn_implementation=attn_impl,
     )
 
+    inst = instruct or None
     wav_paths: list[Path] = []
+
     for ch_idx, chapter in enumerate(chapters):
         wav_path = output_dir / f"chapter_{ch_idx:04d}.wav"
+
+        # Resume: skip chapters already on disk
+        if wav_path.exists():
+            logger.info(
+                "Chapter %d/%d  already exists – skipping", ch_idx + 1, len(chapters)
+            )
+            wav_paths.append(wav_path)
+            continue
+
         logger.info(
             "Chapter %d/%d  '%s'  (%d chars)",
             ch_idx + 1,
@@ -100,16 +107,27 @@ def synthesise_chapters(
         all_audio: list[np.ndarray] = []
         sr: int | None = None
 
-        for i, chunk in enumerate(chunks):
-            logger.info("  chunk %d/%d (%d chars)", i + 1, len(chunks), len(chunk))
-            wavs, sample_rate = model.generate_custom_voice(
-                text=chunk,
-                language=language,
-                speaker=speaker,
-                instruct=instruct if instruct else None,
+        # Process chunks in batches for GPU throughput
+        for b_start in range(0, len(chunks), batch_size):
+            batch = chunks[b_start : b_start + batch_size]
+            logger.info(
+                "  chunks %d–%d / %d", b_start + 1, b_start + len(batch), len(chunks)
             )
-            all_audio.append(wavs[0])
-            sr = sample_rate
+            try:
+                wavs, sample_rate = model.generate_custom_voice(
+                    text=batch,
+                    language=[language] * len(batch),
+                    speaker=[speaker] * len(batch),
+                    instruct=[inst] * len(batch) if inst else None,
+                )
+                all_audio.extend(wavs)
+                sr = sample_rate
+            except Exception:
+                logger.exception(
+                    "  ⚠ TTS failed on chunks %d–%d – skipping batch",
+                    b_start + 1,
+                    b_start + len(batch),
+                )
 
         if not all_audio or sr is None:
             logger.warning(

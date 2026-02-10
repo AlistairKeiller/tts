@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import json
 import logging
+import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
 from pathlib import Path
 
 import soundfile as sf
@@ -14,17 +13,25 @@ import soundfile as sf
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class _ChapterMeta:
-    title: str
-    start_ms: int
-    end_ms: int
+def _escape_ffmeta(value: str) -> str:
+    """Escape special characters for FFMETADATA1 format."""
+    for ch in ("\\", "=", ";", "#", "\n"):
+        value = value.replace(ch, f"\\{ch}")
+    return value
 
 
 def _probe_duration_ms(wav_path: Path) -> int:
-    """Return the duration of a WAV file in milliseconds using soundfile."""
     info = sf.info(str(wav_path))
     return int(info.duration * 1000)
+
+
+def check_ffmpeg() -> None:
+    """Raise early if ffmpeg is not available."""
+    if shutil.which("ffmpeg") is None:
+        raise RuntimeError(
+            "ffmpeg not found on $PATH – install it (e.g. `brew install ffmpeg`) "
+            "before building the M4B."
+        )
 
 
 def build_m4b(
@@ -60,71 +67,64 @@ def build_m4b(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # 1. Build the chapter metadata
-    chapters: list[_ChapterMeta] = []
+    # 1. Build chapter timestamps
     cursor_ms = 0
+    chapter_spans: list[tuple[str, int, int]] = []  # (title, start, end)
     for wp, title in zip(wav_paths, chapter_titles):
         dur = _probe_duration_ms(wp)
-        chapters.append(
-            _ChapterMeta(title=title, start_ms=cursor_ms, end_ms=cursor_ms + dur)
-        )
+        chapter_spans.append((title, cursor_ms, cursor_ms + dur))
         cursor_ms += dur
 
     # 2. Write ffmpeg chapter metadata file (FFMETADATA1 format)
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as meta_fp:
         meta_fp.write(";FFMETADATA1\n")
-        meta_fp.write(f"title={book_title}\n")
+        meta_fp.write(f"title={_escape_ffmeta(book_title)}\n")
         if book_author:
-            meta_fp.write(f"artist={book_author}\n")
+            meta_fp.write(f"artist={_escape_ffmeta(book_author)}\n")
         meta_fp.write("\n")
-        for ch in chapters:
-            meta_fp.write("[CHAPTER]\n")
-            meta_fp.write("TIMEBASE=1/1000\n")
-            meta_fp.write(f"START={ch.start_ms}\n")
-            meta_fp.write(f"END={ch.end_ms}\n")
-            meta_fp.write(f"title={ch.title}\n\n")
-        metadata_path = meta_fp.name
+        for title, start, end in chapter_spans:
+            meta_fp.write("[CHAPTER]\nTIMEBASE=1/1000\n")
+            meta_fp.write(f"START={start}\nEND={end}\n")
+            meta_fp.write(f"title={_escape_ffmeta(title)}\n\n")
+        metadata_path = Path(meta_fp.name)
 
     # 3. Write a concat list for ffmpeg
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as concat_fp:
         for wp in wav_paths:
-            # ffmpeg concat demuxer needs escaped single-quotes in paths
             safe = str(wp.resolve()).replace("'", "'\\''")
             concat_fp.write(f"file '{safe}'\n")
-        concat_path = concat_fp.name
+        concat_path = Path(concat_fp.name)
 
-    # 4. Run ffmpeg to concatenate + encode + embed chapters
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-f",
-        "concat",
-        "-safe",
-        "0",
-        "-i",
-        concat_path,
-        "-i",
-        metadata_path,
-        "-map_metadata",
-        "1",
-        "-c:a",
-        "aac",
-        "-b:a",
-        bitrate,
-        "-movflags",
-        "+faststart",
-        str(output_path),
-    ]
-
-    logger.info("Running: %s", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        logger.error("ffmpeg stderr:\n%s", result.stderr)
-        raise RuntimeError(f"ffmpeg exited with code {result.returncode}")
-
-    # Clean up temp files
-    Path(metadata_path).unlink(missing_ok=True)
-    Path(concat_path).unlink(missing_ok=True)
+    try:
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_path),
+            "-i",
+            str(metadata_path),
+            "-map_metadata",
+            "1",
+            "-c:a",
+            "aac",
+            "-b:a",
+            bitrate,
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ]
+        logger.info("Running: %s", " ".join(cmd))
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            logger.error("ffmpeg stderr:\n%s", result.stderr)
+            raise RuntimeError(f"ffmpeg exited with code {result.returncode}")
+    finally:
+        metadata_path.unlink(missing_ok=True)
+        concat_path.unlink(missing_ok=True)
 
     logger.info("✓ M4B written to %s", output_path)
     return output_path
