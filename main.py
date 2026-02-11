@@ -39,14 +39,14 @@ def main(
     check_ffmpeg()
     chapters = parse_epub(str(epub))
     assert chapters, "No chapters found in EPUB"
-
-    wav_dir = Path(tempfile.mkdtemp(prefix="epub2ab_"))
     if list_chapters:
         for i, ch in enumerate(
             chapters[starting_chapter:ending_chapter], start=starting_chapter
         ):
             print(f"{i}. {ch.title}")
         return
+
+    wav_dir = Path(tempfile.mkdtemp(prefix="epub2ab_"))
 
     wav_paths = synthesise_chapters(
         chapters,
