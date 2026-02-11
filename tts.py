@@ -33,8 +33,6 @@ def synthesise_chapters(
     device = _detect_device()
     log.info("Using device: %s", device)
     attn = "flash_attention_2" if device.startswith("cuda") else "eager"
-    if device.startswith("cuda"):
-        torch.set_float32_matmul_precision("high")
     model = Qwen3TTSModel.from_pretrained(
         "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
         device_map=device,
