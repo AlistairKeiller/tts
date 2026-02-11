@@ -22,7 +22,7 @@ def synthesise_chapters(
     starting_chapter: int = 0,
     ending_chapter: int | None = None,
     vllm_base_url: str = "http://localhost:8091/v1",
-    max_workers: int = 4,
+    max_workers: int = 10,
 ) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     client = OpenAI(base_url=vllm_base_url, api_key="none")
