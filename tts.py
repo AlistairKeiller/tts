@@ -41,7 +41,6 @@ def synthesise_chapters(
         dtype=torch.bfloat16,
         attn_implementation=attn,
     )
-    model = torch.compile(model)
 
     wav_paths: list[Path] = []
     with torch.inference_mode():
