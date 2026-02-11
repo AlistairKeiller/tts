@@ -40,7 +40,7 @@ def main(
     wav_dir = Path(tempfile.mkdtemp(prefix="epub2ab_"))
     if list_chapters:
         for i, ch in enumerate(chapters[starting_chapter:], start=starting_chapter):
-            print(f"{i + 1}. {ch.title}")
+            print(f"{i}. {ch.title}")
         return
 
     wav_paths = synthesise_chapters(
