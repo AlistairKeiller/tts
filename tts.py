@@ -33,24 +33,28 @@ def synthesise_chapters(
     device = _detect_device()
     log.info("Using device: %s", device)
     attn = "flash_attention_2" if device.startswith("cuda") else "eager"
+    if device.startswith("cuda"):
+        torch.set_float32_matmul_precision("high")
     model = Qwen3TTSModel.from_pretrained(
         "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
         device_map=device,
         dtype=torch.bfloat16,
         attn_implementation=attn,
     )
+    model = torch.compile(model)
 
     wav_paths: list[Path] = []
-    for i, ch in enumerate(chapters):
-        log.info("Chapter %d/%d  '%s'", i + 1, len(chapters), ch.title[:40])
-        chunks = [c.text for c in chunker.chunk(ch.text)]
-        wavs, sr = model.generate_custom_voice(
-            text=chunks,
-            language=["Auto"] * len(chunks),
-            speaker=[speaker] * len(chunks),
-        )
-        wav_path = output_dir / f"chapter_{i:04d}.wav"
-        sf.write(str(wav_path), np.concatenate(wavs), sr)
-        wav_paths.append(wav_path)
+    with torch.inference_mode():
+        for i, ch in enumerate(chapters):
+            log.info("Chapter %d/%d  '%s'", i + 1, len(chapters), ch.title[:40])
+            chunks = [c.text for c in chunker.chunk(ch.text)]
+            wavs, sr = model.generate_custom_voice(
+                text=chunks,
+                language=["Auto"] * len(chunks),
+                speaker=[speaker] * len(chunks),
+            )
+            wav_path = output_dir / f"chapter_{i:04d}.wav"
+            sf.write(str(wav_path), np.concatenate(wavs), sr)
+            wav_paths.append(wav_path)
 
     return wav_paths
