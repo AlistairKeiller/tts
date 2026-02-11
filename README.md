@@ -1,0 +1,1 @@
+`uv sync --torch-backend=auto --extra flash-attn`
