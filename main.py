@@ -20,7 +20,7 @@ def main(
         Optional[Path], typer.Option("-o", help="Output .m4b path.")
     ] = None,
     speaker: Annotated[str, typer.Option(help="Speaker voice.")] = "Aiden",
-    bitrate: Annotated[str, typer.Option(help="AAC bitrate.")] = "64k",
+    bitrate: Annotated[str, typer.Option(help="AAC bitrate.")] = "48k",
 ) -> None:
     """Convert an EPUB to an M4B audiobook."""
     logging.basicConfig(

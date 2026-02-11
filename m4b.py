@@ -1,4 +1,5 @@
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -17,7 +18,7 @@ def build_m4b(
     output: Path,
     *,
     book_title: str = "Audiobook",
-    bitrate: str = "64k",
+    bitrate: str = "48k",
 ) -> None:
     """Merge per-chapter WAVs into a single M4B with chapter markers."""
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -44,13 +45,21 @@ def build_m4b(
     concat.close()
 
     try:
-        concat_input = ffmpeg.input(concat.name, f="concat", safe=0)
+        stream = ffmpeg.input(concat.name, f="concat", safe=0).audio
+        stream = stream.filter("loudnorm", I=-16, TP=-1.5, LRA=11)
+
+        codec = (
+            "libfdk_aac"
+            if "libfdk_aac" in subprocess.getoutput("`ffmpeg -encoders`")
+            else "aac"
+        )
+
         (
             ffmpeg.output(
-                concat_input.audio,
+                stream,
                 str(output),
                 map_metadata=1,
-                acodec="aac",
+                acodec=codec,
                 audio_bitrate=bitrate,
                 movflags="+faststart",
             )
