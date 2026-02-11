@@ -10,7 +10,7 @@ from qwen_tts import Qwen3TTSModel
 from epub_parser import Chapter
 
 log = logging.getLogger(__name__)
-chunker = SentenceChunker()
+chunker = SentenceChunker(chunk_size=500)
 
 
 def _detect_device() -> str:
