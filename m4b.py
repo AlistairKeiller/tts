@@ -57,7 +57,7 @@ def build_m4b(
                 movflags="+faststart",
             )
             .overwrite_output()
-            .run(capture_stdout=True, capture_stderr=True)
+            .run(capture_stdout=True, capture_stderr=False)
         )
     finally:
         Path(meta.name).unlink(missing_ok=True)
