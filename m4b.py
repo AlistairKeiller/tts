@@ -44,11 +44,13 @@ def build_m4b(
     concat.close()
 
     try:
+        concat_input = ffmpeg.input(concat.name, f="concat", safe=0)
+        meta_input = ffmpeg.input(meta.name)
         (
-            ffmpeg.input(concat.name, f="concat", safe=0)
-            .output(
+            ffmpeg.output(
+                concat_input,
+                meta_input,
                 str(output),
-                i=meta.name,
                 map_metadata=1,
                 acodec="aac",
                 audio_bitrate=bitrate,
