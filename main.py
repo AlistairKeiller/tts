@@ -24,6 +24,9 @@ def main(
     starting_chapter: Annotated[
         int, typer.Option(help="Starting chapter index (0-based).")
     ] = 0,
+    ending_chapter: Annotated[
+        Optional[int], typer.Option(help="Ending chapter (exclusive, 0-based).")
+    ] = None,
     list_chapters: Annotated[
         bool, typer.Option("--list-chapters", help="List chapter titles and exit.")
     ] = False,
@@ -39,18 +42,24 @@ def main(
 
     wav_dir = Path(tempfile.mkdtemp(prefix="epub2ab_"))
     if list_chapters:
-        for i, ch in enumerate(chapters[starting_chapter:], start=starting_chapter):
+        for i, ch in enumerate(
+            chapters[starting_chapter:ending_chapter], start=starting_chapter
+        ):
             print(f"{i}. {ch.title}")
         return
 
     wav_paths = synthesise_chapters(
-        chapters, wav_dir, speaker=speaker, starting_chapter=starting_chapter
+        chapters,
+        wav_dir,
+        speaker=speaker,
+        starting_chapter=starting_chapter,
+        ending_chapter=ending_chapter,
     )
 
     out = output or epub.with_suffix(".m4b")
     build_m4b(
         wav_paths,
-        [c.title for c in chapters[starting_chapter:]],
+        [c.title for c in chapters[starting_chapter:ending_chapter]],
         out,
         book_title=epub.stem,
         bitrate=bitrate,

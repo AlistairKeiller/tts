@@ -27,6 +27,7 @@ def synthesise_chapters(
     *,
     speaker: str = "Aiden",
     starting_chapter: int = 0,
+    ending_chapter: int | None = None,
 ) -> list[Path]:
     """Generate one WAV per chapter, return list of paths."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -43,7 +44,9 @@ def synthesise_chapters(
 
     wav_paths: list[Path] = []
     with torch.inference_mode():
-        for i, ch in enumerate(chapters[starting_chapter:], start=starting_chapter):
+        for i, ch in enumerate(
+            chapters[starting_chapter:ending_chapter], start=starting_chapter
+        ):
             log.info("Chapter %d/%d  '%s'", i + 1, len(chapters), ch.title[:40])
             chunks = [c.text for c in chunker.chunk(ch.text)]
             wavs, sr = model.generate_custom_voice(

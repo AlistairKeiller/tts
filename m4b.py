@@ -50,7 +50,7 @@ def build_m4b(
 
         codec = (
             "libfdk_aac"
-            if "libfdk_aac" in subprocess.getoutput("`ffmpeg -encoders`")
+            if "libfdk_aac" in subprocess.getoutput("ffmpeg -encoders")
             else "aac"
         )
 
@@ -65,7 +65,7 @@ def build_m4b(
             )
             .global_args("-i", meta.name)
             .overwrite_output()
-            .run(capture_stdout=True, capture_stderr=False)
+            .run(capture_stdout=True, capture_stderr=True)
         )
     finally:
         Path(meta.name).unlink(missing_ok=True)
