@@ -26,6 +26,7 @@ def synthesise_chapters(
     output_dir: Path,
     *,
     speaker: str = "Aiden",
+    starting_chapter: int = 0,
 ) -> list[Path]:
     """Generate one WAV per chapter, return list of paths."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -34,7 +35,7 @@ def synthesise_chapters(
     log.info("Using device: %s", device)
     attn = "flash_attention_2" if device.startswith("cuda") else "eager"
     model = Qwen3TTSModel.from_pretrained(
-        "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+        "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
         device_map=device,
         dtype=torch.bfloat16,
         attn_implementation=attn,
@@ -42,7 +43,7 @@ def synthesise_chapters(
 
     wav_paths: list[Path] = []
     with torch.inference_mode():
-        for i, ch in enumerate(chapters):
+        for i, ch in enumerate(chapters[starting_chapter:], start=starting_chapter):
             log.info("Chapter %d/%d  '%s'", i + 1, len(chapters), ch.title[:40])
             chunks = [c.text for c in chunker.chunk(ch.text)]
             wavs, sr = model.generate_custom_voice(
