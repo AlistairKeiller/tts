@@ -35,8 +35,7 @@ def synthesise_chapters(
         output_dir / f"chapter_{starting_chapter + i:04d}.wav" for i in range(len(sel))
     ]
 
-    # Chunk pending chapters, build batches up to BATCH_CHARS
-    pending: list[tuple[int, str]] = []  # (sel_idx, chunk_text)
+    pending: list[tuple[int, str]] = []
     for i, ch in enumerate(sel):
         if wav_paths[i].exists() and wav_paths[i].stat().st_size > 0:
             log.info("Skipping chapter %d (exists)", starting_chapter + i)
