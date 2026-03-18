@@ -38,7 +38,10 @@ def synthesise_chapters(
         attn_implementation=attn,
     )
     if device.startswith("cuda"):
-        model = torch.compile(model, mode="reduce-overhead")
+        model.talker = torch.compile(model.talker, mode="reduce-overhead")
+        model.code_predictor = torch.compile(
+            model.code_predictor, mode="reduce-overhead"
+        )
 
     wav_paths: list[Path] = []
     with torch.inference_mode():
