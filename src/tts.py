@@ -52,11 +52,15 @@ def synthesise_chapters(
                 continue
             log.info("Chapter %d/%d  '%s'", i + 1, len(chapters), ch.title[:40])
             chunks = [c.text for c in chunker.chunk(ch.text)]
-            wavs, sr = model.generate_custom_voice(
-                text=chunks,
-                language=["english"] * len(chunks),
-                speaker=[speaker] * len(chunks),
-            )
+            wavs = []
+            sr = None
+            for chunk in chunks:
+                wav, sr = model.generate_custom_voice(
+                    text=chunk,
+                    language="english",
+                    speaker=speaker,
+                )
+                wavs.append(wav)
             sf.write(str(wav_path), np.concatenate(wavs).astype(np.float32), sr)
             del wavs
             torch.cuda.empty_cache()
