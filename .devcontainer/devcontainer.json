@@ -3,6 +3,13 @@
     "build": {
         "dockerfile": "Dockerfile"
     },
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python"
+            ]
+        }
+    },
     "runArgs": [
         "--platform=linux/amd64"
     ]

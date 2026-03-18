@@ -5,22 +5,12 @@ import numpy as np
 import soundfile as sf
 import torch
 from chonkie import SentenceChunker
-from faster_qwen3_tts import FasterQwen3TTS
+from qwen_tts import Qwen3TTSModel
 
 from epub_parser import Chapter
 
 log = logging.getLogger(__name__)
 chunker = SentenceChunker(chunk_size=1500)
-
-SAMPLE_RATE = 24_000  # fallback if model doesn't report one
-
-
-def _to_numpy(wav) -> np.ndarray:
-    while isinstance(wav, (list, tuple)) and len(wav) == 1:
-        wav = wav[0]
-    if isinstance(wav, torch.Tensor):
-        return wav.detach().cpu().float().numpy().ravel()
-    return np.asarray(wav, dtype=np.float32).ravel()
 
 
 def synthesise_chapters(
@@ -33,12 +23,22 @@ def synthesise_chapters(
 ) -> list[Path]:
     """Generate one WAV per chapter, return list of paths."""
     output_dir.mkdir(parents=True, exist_ok=True)
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     log.info("Using device: %s", device)
 
-    model = FasterQwen3TTS.from_pretrained(
+    if device.startswith("cuda"):
+        torch.backends.cudnn.benchmark = True
+
+    attn = "flash_attention_2" if device.startswith("cuda") else "eager"
+    model = Qwen3TTSModel.from_pretrained(
         "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        device_map=device,
+        dtype=torch.bfloat16,
+        attn_implementation=attn,
     )
+    # if device.startswith("cuda"):
+    #     model = torch.compile(model, mode="reduce-overhead")
 
     wav_paths: list[Path] = []
     with torch.inference_mode():
@@ -50,36 +50,16 @@ def synthesise_chapters(
                 log.info("Skipping chapter %d (already exists)", i)
                 wav_paths.append(wav_path)
                 continue
-
             log.info("Chapter %d/%d  '%s'", i + 1, len(chapters), ch.title[:40])
             chunks = [c.text for c in chunker.chunk(ch.text)]
-            if not chunks:
-                log.warning("Chapter %d has no text chunks, skipping", i)
-                continue
-
-            wavs: list[np.ndarray] = []
-            sr = SAMPLE_RATE
-            for chunk in chunks:
-                wav, chunk_sr = model.generate_custom_voice(
-                    text=chunk,
-                    language="english",
-                    speaker=speaker,
-                )
-                log.debug("chunk_sr=%r  type=%s", chunk_sr, type(chunk_sr))
-                if chunk_sr is not None and int(chunk_sr) > 0:
-                    sr = int(chunk_sr)
-                wavs.append(_to_numpy(wav))
-
-            audio = np.concatenate(wavs).astype(np.float32)
-            log.info(
-                "Writing %s  (sr=%d, chunks=%d, samples=%d)",
-                wav_path.name,
-                sr,
-                len(wavs),
-                len(audio),
+            wavs, sr = model.generate_custom_voice(
+                text=chunks,
+                language=["Auto"] * len(chunks),
+                speaker=[speaker] * len(chunks),
             )
-            sf.write(str(wav_path), audio, sr, format="WAV", subtype="FLOAT")
+            sf.write(str(wav_path), np.concatenate(wavs).astype(np.float32), sr)
             del wavs
             torch.cuda.empty_cache()
             wav_paths.append(wav_path)
+
     return wav_paths
