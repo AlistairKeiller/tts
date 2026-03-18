@@ -54,7 +54,7 @@ def synthesise_chapters(
             chunks = [c.text for c in chunker.chunk(ch.text)]
             wavs, sr = model.generate_custom_voice(
                 text=chunks,
-                language=["Auto"] * len(chunks),
+                language=["english"] * len(chunks),
                 speaker=[speaker] * len(chunks),
             )
             sf.write(str(wav_path), np.concatenate(wavs).astype(np.float32), sr)
