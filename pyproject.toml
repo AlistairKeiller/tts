@@ -10,6 +10,7 @@ dependencies = [
     "ebooklib>=0.20",
     "ffmpeg-python>=0.2",
     "httpx>=0.27",
+    "nemo-text-processing>=1.1.0",
     "numpy>=1.26",
     "soundfile>=0.13.1",
     "typer>=0.24.1",
