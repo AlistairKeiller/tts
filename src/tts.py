@@ -30,7 +30,7 @@ async def _make_ref(client: httpx.AsyncClient, path: Path) -> dict:
     return {"audio_path": str(path), "text": NARRATOR_TEXT}
 
 
-async def _synth(client, sem, payload, ci, total, ch_idx):
+async def _synth(client, sem, payload, ch_i, ci, total):
     async with sem:
         t0 = time.monotonic()
         resp = await client.post("/v1/audio/speech", json=payload)
@@ -41,12 +41,12 @@ async def _synth(client, sem, payload, ci, total, ch_idx):
             "Chunk %d/%d ch%d %.1fs in %.1fs RTF:%.2f",
             ci + 1,
             total,
-            ch_idx,
+            ch_i,
             len(data) / sr,
             el,
             len(data) / sr / el if el else 0,
         )
-    return ci, data, sr
+    return ch_i, ci, data, sr
 
 
 def _crossfade(parts: list[np.ndarray], sr: int) -> np.ndarray:
@@ -83,25 +83,20 @@ async def _run(
         output_dir / f"chapter_{starting_chapter + i:04d}.wav" for i in range(len(sel))
     ]
 
-    pending: dict[int, list[tuple[int, str]]] = {}
+    jobs: list[tuple[int, int, str]] = []  # (local_ch_idx, global_ci, text)
     ci = 0
     for i, ch in enumerate(sel):
         if wav_paths[i].exists() and wav_paths[i].stat().st_size > 0:
             log.info("Skipping chapter %d (exists)", starting_chapter + i)
             continue
         for c in chunker.chunk(ch.text):
-            pending.setdefault(i, []).append((ci, c.text))
+            jobs.append((i, ci, c.text))
             ci += 1
 
-    if not pending:
+    if not jobs:
         return wav_paths
 
-    log.info(
-        "Processing %d chunks, %d chapters, %d concurrent",
-        ci,
-        len(pending),
-        max_concurrent,
-    )
+    log.info("Processing %d chunks, %d concurrent", len(jobs), max_concurrent)
     limits = httpx.Limits(
         max_connections=max_concurrent + 4, max_keepalive_connections=max_concurrent
     )
@@ -109,38 +104,42 @@ async def _run(
     async with httpx.AsyncClient(
         base_url=base_url, timeout=600, limits=limits
     ) as client:
-        ref_path = Path(tempfile.mkdtemp(prefix="ref_")) / "narrator.wav"
-        ref = await _make_ref(client, ref_path)
+        ref = await _make_ref(
+            client, Path(tempfile.mkdtemp(prefix="ref_")) / "narrator.wav"
+        )
         sem = asyncio.Semaphore(max_concurrent)
 
-        for idx in sorted(pending):
-            tasks = [
-                _synth(
-                    client,
-                    sem,
-                    {"input": text, "references": [ref]},
-                    c,
-                    ci,
-                    starting_chapter + idx,
-                )
-                for c, text in pending[idx]
+        tasks = [
+            _synth(
+                client,
+                sem,
+                {"input": txt, "references": [ref]},
+                starting_chapter + ch_i,
+                ci,
+                len(jobs),
+            )
+            for ch_i, ci, txt in jobs
+        ]
+        results = await asyncio.gather(*tasks)
+
+    by_ch: dict[int, list[tuple[int, np.ndarray]]] = {}
+    sr = results[0][3]
+    for ch_idx, ci, data, _ in results:
+        by_ch.setdefault(ch_idx, []).append((ci, data))
+
+    for ch_idx in sorted(by_ch):
+        i = ch_idx - starting_chapter
+        parts = sorted(by_ch[ch_idx])
+        audio = np.concatenate(
+            [
+                _crossfade([p for _, p in parts], sr).astype(np.float32),
+                np.zeros(int(SILENCE * sr), dtype=np.float32),
             ]
-            results = await asyncio.gather(*tasks)
-            sr = results[0][2]
-            parts = sorted([(c, d) for c, d, _ in results])
-            audio = np.concatenate(
-                [
-                    _crossfade([p for _, p in parts], sr).astype(np.float32),
-                    np.zeros(int(SILENCE * sr), dtype=np.float32),
-                ]
-            )
-            sf.write(str(wav_paths[idx]), audio, sr, format="WAV", subtype="FLOAT")
-            log.info(
-                "Wrote ch%d '%s' %.1fs",
-                starting_chapter + idx + 1,
-                sel[idx].title[:40],
-                len(audio) / sr,
-            )
+        )
+        sf.write(str(wav_paths[i]), audio, sr, format="WAV", subtype="FLOAT")
+        log.info(
+            "Wrote ch%d '%s' %.1fs", ch_idx + 1, sel[i].title[:40], len(audio) / sr
+        )
 
     return [p for p in wav_paths if p.exists() and p.stat().st_size > 0]
 
