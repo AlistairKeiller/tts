@@ -1,13 +1,16 @@
-import asyncio, io, logging, tempfile, time
+import asyncio, io, logging, re, shutil, tempfile, time
 from pathlib import Path
 
 import httpx, numpy as np, soundfile as sf
-from chonkie import SentenceChunker
 from epub_parser import Chapter
 
 log = logging.getLogger(__name__)
-chunker = SentenceChunker(chunk_size=1200)
-CROSSFADE, SILENCE, MAX_CONCURRENT = 0.03, 0.5, 24
+
+MAX_CHUNK_CHARS = 1500
+MAX_CONCURRENT = 24
+SILENCE_BODY = 0.25  # seconds between body chunks
+SILENCE_TITLE = 1.0  # seconds after chapter title
+SILENCE_CHAPTER_END = 0.5  # seconds at end of chapter
 
 NARRATOR_TEXT = (
     "In the quiet hours before dawn, the world seems to hold its breath. "
@@ -17,7 +20,52 @@ NARRATOR_TEXT = (
 )
 
 
-async def _make_ref(client: httpx.AsyncClient, path: Path) -> dict:
+def _chunk_text(text: str) -> list[str]:
+    """Split on paragraphs; subdivide long ones at sentence boundaries."""
+    chunks = []
+    for para in text.split("\n\n"):
+        para = para.strip()
+        if not para:
+            continue
+        if len(para) <= MAX_CHUNK_CHARS:
+            chunks.append(para)
+            continue
+        buf = ""
+        for sent in re.split(r"(?<=[.!?])\s+", para):
+            if buf and len(buf) + len(sent) > MAX_CHUNK_CHARS:
+                chunks.append(buf)
+                buf = sent
+            else:
+                buf = f"{buf} {sent}".strip() if buf else sent
+        if buf:
+            chunks.append(buf)
+    return chunks
+
+
+def _silence(sr: int, seconds: float) -> np.ndarray:
+    return np.zeros(int(seconds * sr), dtype=np.float32)
+
+
+def _join(parts: list[np.ndarray], sr: int) -> np.ndarray:
+    """Join chunks: longer pause after title (index 0), shorter between body."""
+    if not parts:
+        return np.array([], dtype=np.float32)
+    pieces = [parts[0], _silence(sr, SILENCE_TITLE)]
+    for p in parts[1:]:
+        pieces.extend([p, _silence(sr, SILENCE_BODY)])
+    pieces.append(_silence(sr, SILENCE_CHAPTER_END))
+    return np.concatenate(pieces)
+
+
+async def _get_ref(
+    client: httpx.AsyncClient, ref_audio: Path | None, ref_dir: Path
+) -> dict:
+    if ref_audio and ref_audio.exists():
+        dst = ref_dir / "narrator.wav"
+        shutil.copy2(ref_audio, dst)
+        log.info("Using supplied reference: %s", ref_audio)
+        return {"audio_path": str(dst), "text": NARRATOR_TEXT}
+
     resp = await client.post(
         "/v1/audio/speech",
         json={
@@ -25,9 +73,10 @@ async def _make_ref(client: httpx.AsyncClient, path: Path) -> dict:
         },
     )
     resp.raise_for_status()
-    path.write_bytes(resp.content)
-    log.info("Narrator ref saved (%.1f KB)", len(resp.content) / 1024)
-    return {"audio_path": str(path), "text": NARRATOR_TEXT}
+    dst = ref_dir / "narrator.wav"
+    dst.write_bytes(resp.content)
+    log.info("Narrator ref generated (%.1f KB)", len(resp.content) / 1024)
+    return {"audio_path": str(dst), "text": NARRATOR_TEXT}
 
 
 async def _synth(client, sem, payload, ch_i, ci, total):
@@ -49,24 +98,6 @@ async def _synth(client, sem, payload, ch_i, ci, total):
     return ch_i, ci, data, sr
 
 
-def _crossfade(parts: list[np.ndarray], sr: int) -> np.ndarray:
-    if len(parts) <= 1:
-        return parts[0] if parts else np.array([], dtype=np.float32)
-    n = int(CROSSFADE * sr)
-    out = parts[0].copy()
-    for p in parts[1:]:
-        if n and len(out) >= n and len(p) >= n:
-            fade = np.linspace(0, 1, n, dtype=np.float32)
-            if out.ndim > 1:
-                fade = fade[:, None]
-            out = np.concatenate(
-                [out[:-n], out[-n:] * (1 - fade) + p[:n] * fade, p[n:]]
-            )
-        else:
-            out = np.concatenate([out, p])
-    return out
-
-
 async def _run(
     chapters,
     output_dir,
@@ -75,7 +106,7 @@ async def _run(
     starting_chapter,
     ending_chapter,
     max_concurrent,
-    **_kw,
+    ref_audio,
 ):
     output_dir.mkdir(parents=True, exist_ok=True)
     sel = chapters[starting_chapter:ending_chapter]
@@ -83,14 +114,14 @@ async def _run(
         output_dir / f"chapter_{starting_chapter + i:04d}.wav" for i in range(len(sel))
     ]
 
-    jobs: list[tuple[int, int, str]] = []  # (local_ch_idx, global_ci, text)
+    jobs = []
     ci = 0
     for i, ch in enumerate(sel):
         if wav_paths[i].exists() and wav_paths[i].stat().st_size > 0:
             log.info("Skipping chapter %d (exists)", starting_chapter + i)
             continue
-        for c in chunker.chunk(ch.text):
-            jobs.append((i, ci, c.text))
+        for text in [ch.title] + _chunk_text(ch.text):
+            jobs.append((i, ci, text))
             ci += 1
 
     if not jobs:
@@ -104,11 +135,8 @@ async def _run(
     async with httpx.AsyncClient(
         base_url=base_url, timeout=600, limits=limits
     ) as client:
-        ref = await _make_ref(
-            client, Path(tempfile.mkdtemp(prefix="ref_")) / "narrator.wav"
-        )
+        ref = await _get_ref(client, ref_audio, Path(tempfile.mkdtemp(prefix="ref_")))
         sem = asyncio.Semaphore(max_concurrent)
-
         tasks = [
             _synth(
                 client,
@@ -129,13 +157,8 @@ async def _run(
 
     for ch_idx in sorted(by_ch):
         i = ch_idx - starting_chapter
-        parts = sorted(by_ch[ch_idx])
-        audio = np.concatenate(
-            [
-                _crossfade([p for _, p in parts], sr).astype(np.float32),
-                np.zeros(int(SILENCE * sr), dtype=np.float32),
-            ]
-        )
+        parts = [d for _, d in sorted(by_ch[ch_idx])]
+        audio = _join(parts, sr)
         sf.write(str(wav_paths[i]), audio, sr, format="WAV", subtype="FLOAT")
         log.info(
             "Wrote ch%d '%s' %.1fs", ch_idx + 1, sel[i].title[:40], len(audio) / sr
@@ -149,8 +172,7 @@ def synthesise_chapters(
     output_dir,
     *,
     base_url="http://127.0.0.1:8000",
-    temperature=0.5,
-    repetition_penalty=1.3,
+    ref_audio=None,
     starting_chapter=0,
     ending_chapter=None,
     max_workers=MAX_CONCURRENT,
@@ -160,6 +182,7 @@ def synthesise_chapters(
             chapters,
             output_dir,
             base_url=base_url,
+            ref_audio=ref_audio,
             starting_chapter=starting_chapter,
             ending_chapter=ending_chapter,
             max_concurrent=max_workers,
