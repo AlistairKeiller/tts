@@ -1,17 +1,16 @@
 import logging
 import time
 from pathlib import Path
-
 import numpy as np
 import soundfile as sf
 import torch
 from chonkie import SentenceChunker
 from qwen_tts import Qwen3TTSModel
-
 from epub_parser import Chapter
 
 log = logging.getLogger(__name__)
 chunker = SentenceChunker(chunk_size=3000)
+BATCH_CHARS = 60_000
 
 
 def synthesise_chapters(
@@ -22,55 +21,77 @@ def synthesise_chapters(
     starting_chapter: int = 0,
     ending_chapter: int | None = None,
 ) -> list[Path]:
-    """Generate one WAV per chapter, return list of paths."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    log.info("Using device: %s", device)
-
-    attn = "flash_attention_2" if device.startswith("cuda") else "eager"
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    log.info("Using device: %s", dev)
     model = Qwen3TTSModel.from_pretrained(
         "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
-        device_map=device,
+        device_map=dev,
         dtype=torch.bfloat16,
-        attn_implementation=attn,
+        attn_implementation="flash_attention_2" if dev == "cuda" else "eager",
     )
+    sel = chapters[starting_chapter:ending_chapter]
+    wav_paths = [
+        output_dir / f"chapter_{starting_chapter + i:04d}.wav" for i in range(len(sel))
+    ]
 
-    wav_paths: list[Path] = []
+    # Chunk pending chapters, build batches up to BATCH_CHARS
+    pending: list[tuple[int, str]] = []  # (sel_idx, chunk_text)
+    for i, ch in enumerate(sel):
+        if wav_paths[i].exists() and wav_paths[i].stat().st_size > 0:
+            log.info("Skipping chapter %d (exists)", starting_chapter + i)
+            continue
+        pending.extend((i, c.text) for c in chunker.chunk(ch.text))
+
+    batches: list[list[tuple[int, str]]] = [[]]
+    cur_chars = 0
+    for item in pending:
+        if cur_chars and cur_chars + len(item[1]) > BATCH_CHARS:
+            batches.append([])
+            cur_chars = 0
+        batches[-1].append(item)
+        cur_chars += len(item[1])
+    if not batches[0]:
+        return wav_paths
+
+    log.info("Processing %d chunks in %d batches", len(pending), len(batches))
+    ch_wavs: dict[int, list[np.ndarray]] = {}
+    sr = 0
+
     with torch.inference_mode():
-        for i, ch in enumerate(
-            chapters[starting_chapter:ending_chapter], start=starting_chapter
-        ):
-            wav_path = output_dir / f"chapter_{i:04d}.wav"
-            if wav_path.exists() and wav_path.stat().st_size > 0:
-                log.info("Skipping chapter %d (already exists)", i)
-                wav_paths.append(wav_path)
-                continue
-
-            chunks = [c.text for c in chunker.chunk(ch.text)]
-
+        for bi, batch in enumerate(batches):
+            texts = [t for _, t in batch]
             t0 = time.monotonic()
             wavs, sr = model.generate_custom_voice(
-                text=chunks,
-                language=["Auto"] * len(chunks),
-                speaker=[speaker] * len(chunks),
+                text=texts,
+                language=["Auto"] * len(texts),
+                speaker=[speaker] * len(texts),
             )
-            elapsed = time.monotonic() - t0
-
-            audio = np.concatenate(wavs).astype(np.float32)
-            audio_dur = len(audio) / sr
-            rtf = audio_dur / elapsed if elapsed > 0 else float("inf")
-
+            el = time.monotonic() - t0
+            dur = sum(len(w) for w in wavs) / sr
             log.info(
-                "Chapter %d/%d  '%s'  %.1fs audio in %.1fs  (RTF: %.2f)",
-                i + 1,
-                len(chapters),
-                ch.title[:40],
-                audio_dur,
-                elapsed,
-                rtf,
+                "Batch %d/%d  %d chunks  %.1fs audio in %.1fs  (RTF: %.2f)",
+                bi + 1,
+                len(batches),
+                len(texts),
+                dur,
+                el,
+                dur / el if el else 0,
             )
+            for (idx, _), w in zip(batch, wavs):
+                ch_wavs.setdefault(idx, []).append(w)
+            del wavs
+            if dev == "cuda":
+                torch.cuda.empty_cache()
 
-            sf.write(str(wav_path), audio, sr, format="WAV", subtype="FLOAT")
-            del wavs, audio
-            wav_paths.append(wav_path)
+    for idx, parts in ch_wavs.items():
+        audio = np.concatenate(parts).astype(np.float32)
+        sf.write(str(wav_paths[idx]), audio, sr, format="WAV", subtype="FLOAT")
+        log.info(
+            "Wrote ch %d '%s' %.1fs",
+            starting_chapter + idx + 1,
+            sel[idx].title[:40],
+            len(audio) / sr,
+        )
+
     return wav_paths
