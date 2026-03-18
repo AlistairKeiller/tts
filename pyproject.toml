@@ -14,7 +14,7 @@ dependencies = [
     "typer>=0.24.1",
     "torch>=2.10.0",
     "torchaudio>=2.10.0",
-    "flash-attn-3; sys_platform == 'linux'",
+    "flash_attn_3; sys_platform == 'linux'",
 ]
 
 [tool.uv.sources]
@@ -26,7 +26,7 @@ torchaudio = [
     { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
     { index = "pytorch-cu130", marker = "sys_platform != 'darwin'" },
 ]
-flash-attn-3 = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.8.2/flash_attn_3-3.0.0+cu130torch2.10gite2743ab-cp39-abi3-linux_x86_64.whl" }
+flash_attn_3 = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.8.2/flash_attn_3-3.0.0+cu130torch2.10gite2743ab-cp39-abi3-linux_x86_64.whl" }
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
