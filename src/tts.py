@@ -27,10 +27,10 @@ def synthesise_chapters(
     device = "cuda" if torch.cuda.is_available() else "cpu"
     log.info("Using device: %s", device)
 
-    if device.startswith("cuda"):
-        torch.backends.cudnn.benchmark = True
+    # if device.startswith("cuda"):
+    #     torch.backends.cudnn.benchmark = True
 
-    attn = "flash_attention_2" if device.startswith("cuda") else "eager"
+    attn = "sdpa" if device.startswith("cuda") else "eager"
     model = Qwen3TTSModel.from_pretrained(
         "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
         device_map=device,
