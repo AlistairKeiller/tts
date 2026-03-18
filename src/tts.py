@@ -1,5 +1,4 @@
-import base64, io, logging, time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import asyncio, io, logging, tempfile, time
 from pathlib import Path
 
 import httpx, numpy as np, soundfile as sf
@@ -7,12 +6,10 @@ from chonkie import SentenceChunker
 from epub_parser import Chapter
 
 log = logging.getLogger(__name__)
-chunker = SentenceChunker(chunk_size=600)
-CROSSFADE = 0.03
-SILENCE = 0.5
-MAX_WORKERS = 4
+chunker = SentenceChunker(chunk_size=1200)
+CROSSFADE, SILENCE, MAX_CONCURRENT = 0.03, 0.5, 24
 
-NARRATOR_SAMPLE_TEXT = (
+NARRATOR_TEXT = (
     "In the quiet hours before dawn, the world seems to hold its breath. "
     "Every story begins with a single moment, a choice that sets everything in motion. "
     "The pages ahead are filled with wonder and possibility, "
@@ -20,37 +17,28 @@ NARRATOR_SAMPLE_TEXT = (
 )
 
 
-def _create_narrator_reference(client: httpx.Client, temperature: float) -> dict:
-    """Generate a calm narrator sample and return an inline reference dict."""
-    log.info("Creating narrator voice reference...")
-    resp = client.post(
-        "/v1/tts",
+async def _make_ref(client: httpx.AsyncClient, path: Path) -> dict:
+    resp = await client.post(
+        "/v1/audio/speech",
         json={
-            "text": f"[calm, professional, articulate male narration] {NARRATOR_SAMPLE_TEXT}",
-            "format": "wav",
-            "normalize": True,
-            "temperature": max(temperature - 0.2, 0.1),
-            "repetition_penalty": 1.3,
+            "input": f"[calm, professional, articulate male narration] {NARRATOR_TEXT}",
         },
     )
     resp.raise_for_status()
-    audio_b64 = base64.b64encode(resp.content).decode()
-    log.info("Narrator reference generated (%.1f KB)", len(resp.content) / 1024)
-    return {"audio": audio_b64, "text": NARRATOR_SAMPLE_TEXT}
+    path.write_bytes(resp.content)
+    log.info("Narrator ref saved (%.1f KB)", len(resp.content) / 1024)
+    return {"audio_path": str(path), "text": NARRATOR_TEXT}
 
 
-def _synth_one(
-    base_url: str, payload: dict, ci: int, total: int, ch_idx: int
-) -> tuple[int, np.ndarray, int]:
-    """Synthesise a single chunk (runs in a worker thread)."""
-    with httpx.Client(base_url=base_url, timeout=300) as c:
+async def _synth(client, sem, payload, ci, total, ch_idx):
+    async with sem:
         t0 = time.monotonic()
-        resp = c.post("/v1/tts", json=payload)
+        resp = await client.post("/v1/audio/speech", json=payload)
         resp.raise_for_status()
         data, sr = sf.read(io.BytesIO(resp.content))
         el = time.monotonic() - t0
         log.info(
-            "Chunk %d/%d  ch %d  %.1fs audio in %.1fs  (RTF: %.2f)",
+            "Chunk %d/%d ch%d %.1fs in %.1fs RTF:%.2f",
             ci + 1,
             total,
             ch_idx,
@@ -79,77 +67,102 @@ def _crossfade(parts: list[np.ndarray], sr: int) -> np.ndarray:
     return out
 
 
-def synthesise_chapters(
-    chapters: list[Chapter],
-    output_dir: Path,
+async def _run(
+    chapters,
+    output_dir,
     *,
-    base_url: str = "http://127.0.0.1:8080",
-    temperature: float = 0.5,
-    repetition_penalty: float = 1.3,
-    starting_chapter: int = 0,
-    ending_chapter: int | None = None,
-    max_workers: int = MAX_WORKERS,
-) -> list[Path]:
+    base_url,
+    starting_chapter,
+    ending_chapter,
+    max_concurrent,
+    **_kw,
+):
     output_dir.mkdir(parents=True, exist_ok=True)
     sel = chapters[starting_chapter:ending_chapter]
     wav_paths = [
         output_dir / f"chapter_{starting_chapter + i:04d}.wav" for i in range(len(sel))
     ]
 
-    pending: list[tuple[int, str]] = []
+    pending: dict[int, list[tuple[int, str]]] = {}
+    ci = 0
     for i, ch in enumerate(sel):
         if wav_paths[i].exists() and wav_paths[i].stat().st_size > 0:
             log.info("Skipping chapter %d (exists)", starting_chapter + i)
             continue
-        pending.extend((i, c.text) for c in chunker.chunk(ch.text))
+        for c in chunker.chunk(ch.text):
+            pending.setdefault(i, []).append((ci, c.text))
+            ci += 1
 
     if not pending:
         return wav_paths
 
-    log.info("Processing %d chunks (%d workers)", len(pending), max_workers)
+    log.info(
+        "Processing %d chunks, %d chapters, %d concurrent",
+        ci,
+        len(pending),
+        max_concurrent,
+    )
+    limits = httpx.Limits(
+        max_connections=max_concurrent + 4, max_keepalive_connections=max_concurrent
+    )
 
-    with httpx.Client(base_url=base_url, timeout=300) as c:
-        narrator_ref = _create_narrator_reference(c, temperature)
+    async with httpx.AsyncClient(
+        base_url=base_url, timeout=600, limits=limits
+    ) as client:
+        ref_path = Path(tempfile.mkdtemp(prefix="ref_")) / "narrator.wav"
+        ref = await _make_ref(client, ref_path)
+        sem = asyncio.Semaphore(max_concurrent)
 
-    jobs: list[tuple[int, int, dict]] = []
-    for ci, (idx, text) in enumerate(pending):
-        payload: dict = {
-            "text": text,
-            "format": "wav",
-            "normalize": True,
-            "temperature": temperature,
-            "repetition_penalty": repetition_penalty,
-            "references": [narrator_ref],
-        }
-        jobs.append((ci, idx, payload))
-
-    ch_wavs: dict[int, list[tuple[int, np.ndarray]]] = {}
-    sr = 0
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {
-            pool.submit(
-                _synth_one, base_url, payload, ci, len(pending), starting_chapter + idx
-            ): idx
-            for ci, idx, payload in jobs
-        }
-        for fut in as_completed(futures):
-            ci, data, sr = fut.result()
-            ch_wavs.setdefault(futures[fut], []).append((ci, data))
-
-    for idx, parts in ch_wavs.items():
-        parts.sort(key=lambda x: x[0])
-        audio = np.concatenate(
-            [
-                _crossfade([p for _, p in parts], sr).astype(np.float32),
-                np.zeros(int(SILENCE * sr), dtype=np.float32),
+        for idx in sorted(pending):
+            tasks = [
+                _synth(
+                    client,
+                    sem,
+                    {"input": text, "references": [ref]},
+                    c,
+                    ci,
+                    starting_chapter + idx,
+                )
+                for c, text in pending[idx]
             ]
-        )
-        sf.write(str(wav_paths[idx]), audio, sr, format="WAV", subtype="FLOAT")
-        log.info(
-            "Wrote ch %d '%s' %.1fs",
-            starting_chapter + idx + 1,
-            sel[idx].title[:40],
-            len(audio) / sr,
-        )
+            results = await asyncio.gather(*tasks)
+            sr = results[0][2]
+            parts = sorted([(c, d) for c, d, _ in results])
+            audio = np.concatenate(
+                [
+                    _crossfade([p for _, p in parts], sr).astype(np.float32),
+                    np.zeros(int(SILENCE * sr), dtype=np.float32),
+                ]
+            )
+            sf.write(str(wav_paths[idx]), audio, sr, format="WAV", subtype="FLOAT")
+            log.info(
+                "Wrote ch%d '%s' %.1fs",
+                starting_chapter + idx + 1,
+                sel[idx].title[:40],
+                len(audio) / sr,
+            )
 
     return [p for p in wav_paths if p.exists() and p.stat().st_size > 0]
+
+
+def synthesise_chapters(
+    chapters,
+    output_dir,
+    *,
+    base_url="http://127.0.0.1:8000",
+    temperature=0.5,
+    repetition_penalty=1.3,
+    starting_chapter=0,
+    ending_chapter=None,
+    max_workers=MAX_CONCURRENT,
+):
+    return asyncio.run(
+        _run(
+            chapters,
+            output_dir,
+            base_url=base_url,
+            starting_chapter=starting_chapter,
+            ending_chapter=ending_chapter,
+            max_concurrent=max_workers,
+        )
+    )

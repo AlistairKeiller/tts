@@ -1,7 +1,6 @@
 import logging, shutil, tempfile
 from pathlib import Path
 from typing import Annotated, Optional
-
 import typer
 from epub_parser import parse_epub
 from m4b import build_m4b, check_ffmpeg
@@ -14,13 +13,13 @@ app = typer.Typer(help="Convert an EPUB to an M4B audiobook via Fish Speech S2 P
 def main(
     epub: Annotated[Path, typer.Argument(help="Input .epub file.")],
     output: Annotated[Optional[Path], typer.Option("-o")] = None,
-    base_url: Annotated[str, typer.Option("--url")] = "http://127.0.0.1:8081",
+    base_url: Annotated[str, typer.Option("--url")] = "http://127.0.0.1:8000",
     temperature: Annotated[float, typer.Option("--temp")] = 0.5,
     repetition_penalty: Annotated[float, typer.Option("--rep-penalty")] = 1.3,
-    bitrate: Annotated[str, typer.Option()] = "64k",
+    bitrate: Annotated[str, typer.Option()] = "128k",
     starting_chapter: Annotated[int, typer.Option()] = 0,
     ending_chapter: Annotated[Optional[int], typer.Option()] = None,
-    workers: Annotated[int, typer.Option("--workers", "-j")] = 4,
+    workers: Annotated[int, typer.Option("--workers", "-j")] = 24,
     list_chapters: Annotated[bool, typer.Option("--list-chapters")] = False,
 ) -> None:
     logging.basicConfig(
@@ -35,7 +34,6 @@ def main(
         ):
             print(f"{i}. {ch.title}")
         return
-
     wav_dir = Path(tempfile.mkdtemp(prefix="epub2ab_"))
     wav_paths = synthesise_chapters(
         chapters,
