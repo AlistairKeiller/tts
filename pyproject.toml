@@ -15,25 +15,19 @@ dependencies = [
     "torch>=2.10.0",
     "torchaudio>=2.10.0",
     "transformers",
-    "flash-attn>=2.7; sys_platform == 'linux'",
+    "flash-attn-4",
 ]
 [tool.uv.sources]
 transformers = { git = "https://github.com/huggingface/transformers" }
-torch = [
-    { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
-    { index = "pytorch-cu130", marker = "sys_platform != 'darwin'" },
-]
-torchaudio = [
-    { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
-    { index = "pytorch-cu130", marker = "sys_platform != 'darwin'" },
-]
+torch = [{ index = "pytorch-cu130" }]
+torchaudio = [{ index = "pytorch-cu130" }]
 [tool.uv.extra-build-dependencies]
 flash-attn = ["torch"]
 
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
+[tool.uv]
+environments = ["sys_platform == 'linux'"]
+override-dependencies = ["transformers>=4.57.3"]
+
 [[tool.uv.index]]
 name = "pytorch-cu130"
 url = "https://download.pytorch.org/whl/cu130"
