@@ -16,9 +16,11 @@ SAMPLE_RATE = 24_000  # fallback if model doesn't report one
 
 
 def _to_numpy(wav) -> np.ndarray:
+    while isinstance(wav, (list, tuple)) and len(wav) == 1:
+        wav = wav[0]
     if isinstance(wav, torch.Tensor):
-        return wav.cpu().float().numpy()
-    return np.asarray(wav, dtype=np.float32)
+        return wav.detach().cpu().float().numpy().ravel()
+    return np.asarray(wav, dtype=np.float32).ravel()
 
 
 def synthesise_chapters(
