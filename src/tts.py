@@ -10,6 +10,43 @@ chunker = SentenceChunker(chunk_size=600)
 CROSSFADE = 0.03
 SILENCE = 0.5
 
+NARRATOR_SAMPLE_TEXT = (
+    "In the quiet hours before dawn, the world seems to hold its breath. "
+    "Every story begins with a single moment, a choice that sets everything in motion. "
+    "The pages ahead are filled with wonder and possibility, "
+    "and it is my pleasure to guide you through each one."
+)
+NARRATOR_PROMPT = f"[calm, professional narration] {NARRATOR_SAMPLE_TEXT}"
+
+
+def _create_narrator_reference(client: httpx.Client, temperature: float) -> str:
+    """Generate a calm narrator sample and register it as a voice reference."""
+    log.info("Creating narrator voice reference from default voice...")
+
+    resp = client.post(
+        "/v1/tts",
+        json={
+            "text": NARRATOR_PROMPT,
+            "format": "wav",
+            "normalize": True,
+            "temperature": max(temperature - 0.2, 0.1),
+            "repetition_penalty": 1.3,
+        },
+    )
+    resp.raise_for_status()
+    wav_bytes = resp.content
+
+    resp2 = client.post(
+        "/v1/references",
+        files={"audio": ("narrator.wav", wav_bytes, "audio/wav")},
+        data={"text": NARRATOR_SAMPLE_TEXT},
+    )
+    resp2.raise_for_status()
+    body = resp2.json()
+    ref_id = body.get("reference_id") or body.get("id")
+    log.info("Created narrator reference: %s", ref_id)
+    return ref_id
+
 
 def _crossfade(parts: list[np.ndarray], sr: int) -> np.ndarray:
     if len(parts) <= 1:
@@ -58,7 +95,6 @@ def synthesise_chapters(
     if not pending:
         return wav_paths
     log.info("Processing %d chunks", len(pending))
-
     client = httpx.Client(base_url=base_url, timeout=300)
     ch_wavs: dict[int, list[np.ndarray]] = {}
     sr = 0
@@ -70,6 +106,7 @@ def synthesise_chapters(
             "normalize": True,
             "temperature": temperature,
             "repetition_penalty": repetition_penalty,
+            "reference_id": reference_id,
         }
         if reference_id:
             payload["reference_id"] = reference_id
