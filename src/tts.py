@@ -5,7 +5,7 @@ import numpy as np
 import soundfile as sf
 import torch
 from chonkie import SentenceChunker
-from qwen_tts import Qwen3TTSModel
+from faster_qwen3_tts import FasterQwen3TTS
 
 from epub_parser import Chapter
 
@@ -15,9 +15,7 @@ chunker = SentenceChunker(chunk_size=1500)
 
 def _detect_device() -> str:
     if torch.cuda.is_available():
-        return "cuda:0"
-    if torch.backends.mps.is_available():
-        return "mps"
+        return "cuda"
     return "cpu"
 
 
@@ -35,18 +33,12 @@ def synthesise_chapters(
     device = _detect_device()
     log.info("Using device: %s", device)
 
-    if device.startswith("cuda"):
-        torch.backends.cudnn.benchmark = True
+    # if device.startswith("cuda"):
+    #     torch.backends.cudnn.benchmark = True
 
-    attn = "flash_attention_4" if device.startswith("cuda") else "eager"
-    model = Qwen3TTSModel.from_pretrained(
+    model = FasterQwen3TTS.from_pretrained(
         "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
-        device_map=device,
-        dtype=torch.bfloat16,
-        attn_implementation=attn,
     )
-    if device.startswith("cuda"):
-        model = torch.compile(model, mode="reduce-overhead")
 
     wav_paths: list[Path] = []
     with torch.inference_mode():
