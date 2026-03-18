@@ -10,7 +10,7 @@ from epub_parser import Chapter
 
 log = logging.getLogger(__name__)
 chunker = SentenceChunker(chunk_size=1500)
-BATCH_CHARS = 500_000
+BATCH_CHARS = 250_000
 
 
 def synthesise_chapters(
