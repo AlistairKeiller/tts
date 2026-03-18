@@ -1,4 +1,5 @@
 import io, logging, time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import httpx, numpy as np, soundfile as sf
@@ -9,6 +10,7 @@ log = logging.getLogger(__name__)
 chunker = SentenceChunker(chunk_size=600)
 CROSSFADE = 0.03
 SILENCE = 0.5
+MAX_WORKERS = 4
 
 NARRATOR_SAMPLE_TEXT = (
     "In the quiet hours before dawn, the world seems to hold its breath. "
@@ -16,17 +18,15 @@ NARRATOR_SAMPLE_TEXT = (
     "The pages ahead are filled with wonder and possibility, "
     "and it is my pleasure to guide you through each one."
 )
-NARRATOR_PROMPT = f"[calm, professional narration] {NARRATOR_SAMPLE_TEXT}"
 
 
 def _create_narrator_reference(client: httpx.Client, temperature: float) -> str:
     """Generate a calm narrator sample and register it as a voice reference."""
-    log.info("Creating narrator voice reference from default voice...")
-
+    log.info("Creating narrator voice reference...")
     resp = client.post(
         "/v1/tts",
         json={
-            "text": NARRATOR_PROMPT,
+            "text": f"[calm, professional, articulate male narrator] {NARRATOR_SAMPLE_TEXT}",
             "format": "wav",
             "normalize": True,
             "temperature": max(temperature - 0.2, 0.1),
@@ -34,18 +34,38 @@ def _create_narrator_reference(client: httpx.Client, temperature: float) -> str:
         },
     )
     resp.raise_for_status()
-    wav_bytes = resp.content
-
     resp2 = client.post(
         "/v1/references",
-        files={"audio": ("narrator.wav", wav_bytes, "audio/wav")},
+        files={"audio": ("narrator.wav", resp.content, "audio/wav")},
         data={"text": NARRATOR_SAMPLE_TEXT},
     )
     resp2.raise_for_status()
     body = resp2.json()
     ref_id = body.get("reference_id") or body.get("id")
-    log.info("Created narrator reference: %s", ref_id)
+    log.info("Narrator reference: %s", ref_id)
     return ref_id
+
+
+def _synth_one(
+    base_url: str, payload: dict, ci: int, total: int, ch_idx: int
+) -> tuple[int, np.ndarray, int]:
+    """Synthesise a single chunk (runs in a worker thread)."""
+    with httpx.Client(base_url=base_url, timeout=300) as c:
+        t0 = time.monotonic()
+        resp = c.post("/v1/tts", json=payload)
+        resp.raise_for_status()
+        data, sr = sf.read(io.BytesIO(resp.content))
+        el = time.monotonic() - t0
+        log.info(
+            "Chunk %d/%d  ch %d  %.1fs audio in %.1fs  (RTF: %.2f)",
+            ci + 1,
+            total,
+            ch_idx,
+            len(data) / sr,
+            el,
+            len(data) / sr / el if el else 0,
+        )
+    return ci, data, sr
 
 
 def _crossfade(parts: list[np.ndarray], sr: int) -> np.ndarray:
@@ -55,14 +75,12 @@ def _crossfade(parts: list[np.ndarray], sr: int) -> np.ndarray:
     out = parts[0].copy()
     for p in parts[1:]:
         if n and len(out) >= n and len(p) >= n:
-            fo = np.linspace(1, 0, n, dtype=np.float32)
-            fi = np.linspace(0, 1, n, dtype=np.float32)
-            mix = (
-                out[-n:] * fo + p[:n] * fi
-                if out.ndim == 1
-                else out[-n:] * fo[:, None] + p[:n] * fi[:, None]
+            fade = np.linspace(0, 1, n, dtype=np.float32)
+            if out.ndim > 1:
+                fade = fade[:, None]
+            out = np.concatenate(
+                [out[:-n], out[-n:] * (1 - fade) + p[:n] * fade, p[n:]]
             )
-            out = np.concatenate([out[:-n], mix, p[n:]])
         else:
             out = np.concatenate([out, p])
     return out
@@ -78,6 +96,7 @@ def synthesise_chapters(
     repetition_penalty: float = 1.3,
     starting_chapter: int = 0,
     ending_chapter: int | None = None,
+    max_workers: int = MAX_WORKERS,
 ) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     sel = chapters[starting_chapter:ending_chapter]
@@ -94,43 +113,48 @@ def synthesise_chapters(
 
     if not pending:
         return wav_paths
-    log.info("Processing %d chunks", len(pending))
-    client = httpx.Client(base_url=base_url, timeout=300)
-    ch_wavs: dict[int, list[np.ndarray]] = {}
-    sr = 0
 
+    log.info("Processing %d chunks (%d workers)", len(pending), max_workers)
+
+    if not reference_id:
+        with httpx.Client(base_url=base_url, timeout=300) as c:
+            reference_id = _create_narrator_reference(c, temperature)
+
+    jobs: list[tuple[int, int, dict]] = []
     for ci, (idx, text) in enumerate(pending):
-        payload: dict = {
-            "text": text,
-            "format": "wav",
-            "normalize": True,
-            "temperature": temperature,
-            "repetition_penalty": repetition_penalty,
-            "reference_id": reference_id,
-        }
-        if reference_id:
-            payload["reference_id"] = reference_id
-        t0 = time.monotonic()
-        resp = client.post("/v1/tts", json=payload)
-        resp.raise_for_status()
-        data, sr = sf.read(io.BytesIO(resp.content))
-        el = time.monotonic() - t0
-        log.info(
-            "Chunk %d/%d  ch %d  %.1fs audio in %.1fs  (RTF: %.2f)",
-            ci + 1,
-            len(pending),
-            starting_chapter + idx,
-            len(data) / sr,
-            el,
-            len(data) / sr / el if el else 0,
+        jobs.append(
+            (
+                ci,
+                idx,
+                {
+                    "text": text,
+                    "format": "wav",
+                    "normalize": True,
+                    "temperature": temperature,
+                    "repetition_penalty": repetition_penalty,
+                    "reference_id": reference_id,
+                },
+            )
         )
-        ch_wavs.setdefault(idx, []).append(data)
-    client.close()
+
+    ch_wavs: dict[int, list[tuple[int, np.ndarray]]] = {}
+    sr = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(
+                _synth_one, base_url, payload, ci, len(pending), starting_chapter + idx
+            ): idx
+            for ci, idx, payload in jobs
+        }
+        for fut in as_completed(futures):
+            ci, data, sr = fut.result()
+            ch_wavs.setdefault(futures[fut], []).append((ci, data))
 
     for idx, parts in ch_wavs.items():
+        parts.sort(key=lambda x: x[0])
         audio = np.concatenate(
             [
-                _crossfade(parts, sr).astype(np.float32),
+                _crossfade([p for _, p in parts], sr).astype(np.float32),
                 np.zeros(int(SILENCE * sr), dtype=np.float32),
             ]
         )

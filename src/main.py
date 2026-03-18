@@ -21,6 +21,7 @@ def main(
     bitrate: Annotated[str, typer.Option()] = "64k",
     starting_chapter: Annotated[int, typer.Option()] = 0,
     ending_chapter: Annotated[Optional[int], typer.Option()] = None,
+    workers: Annotated[int, typer.Option("--workers", "-j")] = 4,
     list_chapters: Annotated[bool, typer.Option("--list-chapters")] = False,
 ) -> None:
     logging.basicConfig(
@@ -29,7 +30,6 @@ def main(
     check_ffmpeg()
     chapters = parse_epub(str(epub))
     assert chapters, "No chapters found in EPUB"
-
     if list_chapters:
         for i, ch in enumerate(
             chapters[starting_chapter:ending_chapter], start=starting_chapter
@@ -47,9 +47,9 @@ def main(
         repetition_penalty=repetition_penalty,
         starting_chapter=starting_chapter,
         ending_chapter=ending_chapter,
+        max_workers=workers,
     )
     assert wav_paths, "No chapters were synthesised"
-
     titles = [c.title for c in chapters[starting_chapter:ending_chapter]][
         : len(wav_paths)
     ]

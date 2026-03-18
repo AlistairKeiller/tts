@@ -9,12 +9,12 @@ from nemo_text_processing.text_normalization.normalize import Normalizer
 _normalizer = Normalizer(input_case="cased", lang="en", post_process=True)
 
 _AD_PATTERNS = [
-    r"[◈✪★☆●■▶►⊛⊕✦✧☛➤⌘]{1,2}"  # symbol-delimited site ads:
-    r"[^◈✪★☆●■▶►⊛⊕✦✧☛➤⌘\n]{1,60}"  # site name (homoglyphs etc)
     r"[◈✪★☆●■▶►⊛⊕✦✧☛➤⌘]{1,2}"
-    r"(?:\s*\([^)]{0,30}\))?",  # optional (Continue reading) / (Official version)
-    r"[\U0001f300-\U0001f9ff][\s\S]{0,200}?"  # emoji-prefixed inline ads:
-    r"(?:click away|sign up|start meeting|"  # match common ad phrases
+    r"[^◈✪★☆●■▶►⊛⊕✦✧☛➤⌘\n]{1,60}"
+    r"[◈✪★☆●■▶►⊛⊕✦✧☛➤⌘]{1,2}"
+    r"(?:\s*\([^)]{0,30}\))?",
+    r"[\U0001f300-\U0001f9ff][\s\S]{0,200}?"
+    r"(?:click away|sign up|start meeting|"
     r"download now|join free|register today|"
     r"limited offer|subscribe now)"
     r"[^.!?\n]*[.!?]?",
