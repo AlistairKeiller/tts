@@ -6,7 +6,7 @@ from epub_parser import Chapter
 
 log = logging.getLogger(__name__)
 
-MAX_CHUNK_CHARS = 1500
+MAX_CHUNK_CHARS = 700
 MERGE_THRESHOLD = 200  # merge consecutive paragraphs shorter than this
 MAX_CONCURRENT = 24
 MAX_RETRIES = 3
