@@ -11,43 +11,7 @@ from qwen_tts import Qwen3TTSModel
 from epub_parser import Chapter
 
 log = logging.getLogger(__name__)
-chunker = SentenceChunker(chunk_size=1500)
-
-
-def _patch_fa4() -> bool:
-    """Replace F.scaled_dot_product_attention with FlashAttention-4 on Blackwell/Hopper."""
-    try:
-        from flash_attn.cute import flash_attn_func as fa4_func
-    except ImportError:
-        log.warning("flash_attn.cute (FA4) not available, using default attention")
-        return False
-
-    import torch.nn.functional as F
-
-    _original = F.scaled_dot_product_attention
-
-    def _fa4_sdpa(q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False, **kw):
-        # FA4 requires bf16/fp16, no mask, 4-dim tensors
-        # SDPA layout: (B, H, S, D) -> FA4 layout: (B, S, H, D)
-        if (
-            q.dtype in (torch.float16, torch.bfloat16)
-            and attn_mask is None
-            and q.ndim == 4
-        ):
-            out = fa4_func(
-                q.transpose(1, 2).contiguous(),
-                k.transpose(1, 2).contiguous(),
-                v.transpose(1, 2).contiguous(),
-                causal=is_causal,
-            )
-            return out.transpose(1, 2)
-        return _original(
-            q, k, v, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, **kw
-        )
-
-    F.scaled_dot_product_attention = _fa4_sdpa
-    log.info("Patched SDPA with FlashAttention-4 (CuTe DSL)")
-    return True
+chunker = SentenceChunker(chunk_size=3000)
 
 
 def synthesise_chapters(
@@ -63,9 +27,10 @@ def synthesise_chapters(
     device = "cuda" if torch.cuda.is_available() else "cpu"
     log.info("Using device: %s", device)
 
-    _patch_fa4()
+    if device.startswith("cuda"):
+        torch.backends.cudnn.benchmark = True
 
-    attn = "sdpa" if device.startswith("cuda") else "eager"
+    attn = "flash_attention_2" if device.startswith("cuda") else "eager"
     model = Qwen3TTSModel.from_pretrained(
         "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
         device_map=device,
