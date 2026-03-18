@@ -68,8 +68,15 @@ def synthesise_chapters(
                     sr = int(chunk_sr)
                 wavs.append(_to_numpy(wav))
 
-            log.info("Writing %s  (sr=%d, chunks=%d)", wav_path.name, sr, len(wavs))
-            sf.write(str(wav_path), np.concatenate(wavs).astype(np.float32), sr)
+            audio = np.concatenate(wavs).astype(np.float32)
+            log.info(
+                "Writing %s  (sr=%d, chunks=%d, samples=%d)",
+                wav_path.name,
+                sr,
+                len(wavs),
+                len(audio),
+            )
+            sf.write(str(wav_path), audio, sr, format="WAV", subtype="FLOAT")
             del wavs
             torch.cuda.empty_cache()
             wav_paths.append(wav_path)
