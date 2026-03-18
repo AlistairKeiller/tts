@@ -26,7 +26,7 @@ def _create_narrator_reference(client: httpx.Client, temperature: float) -> dict
     resp = client.post(
         "/v1/tts",
         json={
-            "text": f"[calm, professional narration] {NARRATOR_SAMPLE_TEXT}",
+            "text": f"[calm, professional, articulate male narration] {NARRATOR_SAMPLE_TEXT}",
             "format": "wav",
             "normalize": True,
             "temperature": max(temperature - 0.2, 0.1),
