@@ -1,4 +1,4 @@
-import io, logging, time
+import base64, io, logging, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -20,13 +20,13 @@ NARRATOR_SAMPLE_TEXT = (
 )
 
 
-def _create_narrator_reference(client: httpx.Client, temperature: float) -> str:
-    """Generate a calm narrator sample and register it as a voice reference."""
+def _create_narrator_reference(client: httpx.Client, temperature: float) -> dict:
+    """Generate a calm narrator sample and return an inline reference dict."""
     log.info("Creating narrator voice reference...")
     resp = client.post(
         "/v1/tts",
         json={
-            "text": f"[calm, professional, articulate male narrator] {NARRATOR_SAMPLE_TEXT}",
+            "text": f"[calm, professional narration] {NARRATOR_SAMPLE_TEXT}",
             "format": "wav",
             "normalize": True,
             "temperature": max(temperature - 0.2, 0.1),
@@ -34,16 +34,9 @@ def _create_narrator_reference(client: httpx.Client, temperature: float) -> str:
         },
     )
     resp.raise_for_status()
-    resp2 = client.post(
-        "/v1/references",
-        files={"audio": ("narrator.wav", resp.content, "audio/wav")},
-        data={"text": NARRATOR_SAMPLE_TEXT},
-    )
-    resp2.raise_for_status()
-    body = resp2.json()
-    ref_id = body.get("reference_id") or body.get("id")
-    log.info("Narrator reference: %s", ref_id)
-    return ref_id
+    audio_b64 = base64.b64encode(resp.content).decode()
+    log.info("Narrator reference generated (%.1f KB)", len(resp.content) / 1024)
+    return {"audio": audio_b64, "text": NARRATOR_SAMPLE_TEXT}
 
 
 def _synth_one(
@@ -91,7 +84,6 @@ def synthesise_chapters(
     output_dir: Path,
     *,
     base_url: str = "http://127.0.0.1:8080",
-    reference_id: str | None = None,
     temperature: float = 0.5,
     repetition_penalty: float = 1.3,
     starting_chapter: int = 0,
@@ -116,26 +108,20 @@ def synthesise_chapters(
 
     log.info("Processing %d chunks (%d workers)", len(pending), max_workers)
 
-    if not reference_id:
-        with httpx.Client(base_url=base_url, timeout=300) as c:
-            reference_id = _create_narrator_reference(c, temperature)
+    with httpx.Client(base_url=base_url, timeout=300) as c:
+        narrator_ref = _create_narrator_reference(c, temperature)
 
     jobs: list[tuple[int, int, dict]] = []
     for ci, (idx, text) in enumerate(pending):
-        jobs.append(
-            (
-                ci,
-                idx,
-                {
-                    "text": text,
-                    "format": "wav",
-                    "normalize": True,
-                    "temperature": temperature,
-                    "repetition_penalty": repetition_penalty,
-                    "reference_id": reference_id,
-                },
-            )
-        )
+        payload: dict = {
+            "text": text,
+            "format": "wav",
+            "normalize": True,
+            "temperature": temperature,
+            "repetition_penalty": repetition_penalty,
+            "references": [narrator_ref],
+        }
+        jobs.append((ci, idx, payload))
 
     ch_wavs: dict[int, list[tuple[int, np.ndarray]]] = {}
     sr = 0
