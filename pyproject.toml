@@ -25,6 +25,7 @@ torchaudio = [{ index = "pytorch-cu130" }]
 flash-attn = ["torch"]
 
 [tool.uv]
+prerelease = "allow"
 environments = ["sys_platform == 'linux'"]
 override-dependencies = ["transformers>=4.57.3"]
 
