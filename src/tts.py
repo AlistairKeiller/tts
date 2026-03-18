@@ -94,4 +94,4 @@ def synthesise_chapters(
             len(audio) / sr,
         )
 
-    return wav_paths
+    return [p for p in wav_paths if p.exists() and p.stat().st_size > 0]
