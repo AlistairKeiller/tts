@@ -12,7 +12,7 @@ from epub_parser import Chapter
 log = logging.getLogger(__name__)
 chunker = SentenceChunker(chunk_size=1500)
 
-SAMPLE_RATE = 24_000
+SAMPLE_RATE = 24_000  # fallback if model doesn't report one
 
 
 def _to_numpy(wav) -> np.ndarray:
@@ -63,11 +63,13 @@ def synthesise_chapters(
                     language="english",
                     speaker=speaker,
                 )
-                if chunk_sr is not None:
+                log.debug("chunk_sr=%r  type=%s", chunk_sr, type(chunk_sr))
+                if chunk_sr is not None and int(chunk_sr) > 0:
                     sr = int(chunk_sr)
                 wavs.append(_to_numpy(wav))
 
-            sf.write(str(wav_path), np.concatenate(wavs, dtype=np.float32), sr)
+            log.info("Writing %s  (sr=%d, chunks=%d)", wav_path.name, sr, len(wavs))
+            sf.write(str(wav_path), np.concatenate(wavs).astype(np.float32), sr)
             del wavs
             torch.cuda.empty_cache()
             wav_paths.append(wav_path)
