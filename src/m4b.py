@@ -45,18 +45,15 @@ def build_m4b(
     concat.close()
 
     try:
-        stream = ffmpeg.input(concat.name, f="concat", safe=0).audio
-        stream = stream.filter("loudnorm", I=-16, TP=-1.5, LRA=11)
-
         codec = (
             "libfdk_aac"
             if "libfdk_aac" in subprocess.getoutput("ffmpeg -encoders")
             else "aac"
         )
-
         (
-            ffmpeg.output(
-                stream,
+            ffmpeg.input(concat.name, f="concat", safe=0)
+            .audio.filter("loudnorm", I=-16, TP=-1.5, LRA=11)
+            .output(
                 str(output),
                 map_metadata=1,
                 acodec=codec,

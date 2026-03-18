@@ -12,11 +12,13 @@ from epub_parser import Chapter
 log = logging.getLogger(__name__)
 chunker = SentenceChunker(chunk_size=1500)
 
+SAMPLE_RATE = 24_000
 
-def _detect_device() -> str:
-    if torch.cuda.is_available():
-        return "cuda"
-    return "cpu"
+
+def _to_numpy(wav) -> np.ndarray:
+    if isinstance(wav, torch.Tensor):
+        return wav.cpu().float().numpy()
+    return np.asarray(wav, dtype=np.float32)
 
 
 def synthesise_chapters(
@@ -29,12 +31,8 @@ def synthesise_chapters(
 ) -> list[Path]:
     """Generate one WAV per chapter, return list of paths."""
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    device = _detect_device()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     log.info("Using device: %s", device)
-
-    # if device.startswith("cuda"):
-    #     torch.backends.cudnn.benchmark = True
 
     model = FasterQwen3TTS.from_pretrained(
         "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
@@ -50,20 +48,26 @@ def synthesise_chapters(
                 log.info("Skipping chapter %d (already exists)", i)
                 wav_paths.append(wav_path)
                 continue
+
             log.info("Chapter %d/%d  '%s'", i + 1, len(chapters), ch.title[:40])
             chunks = [c.text for c in chunker.chunk(ch.text)]
-            wavs = []
-            sr = None
+            if not chunks:
+                log.warning("Chapter %d has no text chunks, skipping", i)
+                continue
+
+            wavs: list[np.ndarray] = []
+            sr = SAMPLE_RATE
             for chunk in chunks:
-                wav, sr = model.generate_custom_voice(
+                wav, chunk_sr = model.generate_custom_voice(
                     text=chunk,
                     language="english",
                     speaker=speaker,
                 )
-                wavs.append(wav)
-            sf.write(str(wav_path), np.concatenate(wavs).astype(np.float32), sr)
+                sr = chunk_sr or sr
+                wavs.append(_to_numpy(wav))
+
+            sf.write(str(wav_path), np.concatenate(wavs, dtype=np.float32), sr)
             del wavs
             torch.cuda.empty_cache()
             wav_paths.append(wav_path)
-
     return wav_paths
