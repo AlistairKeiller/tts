@@ -1,0 +1,9 @@
+{
+    "name": "Linux",
+    "build": {
+        "dockerfile": "Dockerfile"
+    },
+    "runArgs": [
+        "--platform=linux/amd64"
+    ]
+}
