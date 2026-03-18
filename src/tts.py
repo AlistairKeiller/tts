@@ -8,7 +8,7 @@ log = logging.getLogger(__name__)
 
 MAX_CHUNK_CHARS = 700
 MERGE_THRESHOLD = 200  # merge consecutive paragraphs shorter than this
-MAX_CONCURRENT = 24
+MAX_CONCURRENT = 4
 MAX_RETRIES = 3
 SILENCE_BODY = 0.25
 SILENCE_TITLE = 1.0
