@@ -1,35 +1,31 @@
+import io
 import logging
 import time
 from pathlib import Path
+
+import httpx
 import numpy as np
 import soundfile as sf
-import torch
 from chonkie import SentenceChunker
-from qwen_tts import Qwen3TTSModel
 from epub_parser import Chapter
 
 log = logging.getLogger(__name__)
 chunker = SentenceChunker(chunk_size=1500)
-BATCH_CHARS = 125_000
+
+DEFAULT_BASE = "http://127.0.0.1:8080"
 
 
 def synthesise_chapters(
     chapters: list[Chapter],
     output_dir: Path,
     *,
-    speaker: str = "Aiden",
+    base_url: str = DEFAULT_BASE,
+    reference_id: str | None = None,
     starting_chapter: int = 0,
     ending_chapter: int | None = None,
 ) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    dev = "cuda" if torch.cuda.is_available() else "cpu"
-    log.info("Using device: %s", dev)
-    model = Qwen3TTSModel.from_pretrained(
-        "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
-        device_map=dev,
-        dtype=torch.bfloat16,
-        attn_implementation="flash_attention_2" if dev == "cuda" else "eager",
-    )
+
     sel = chapters[starting_chapter:ending_chapter]
     wav_paths = [
         output_dir / f"chapter_{starting_chapter + i:04d}.wav" for i in range(len(sel))
@@ -42,46 +38,38 @@ def synthesise_chapters(
             continue
         pending.extend((i, c.text) for c in chunker.chunk(ch.text))
 
-    batches: list[list[tuple[int, str]]] = [[]]
-    cur_chars = 0
-    for item in pending:
-        if cur_chars and cur_chars + len(item[1]) > BATCH_CHARS:
-            batches.append([])
-            cur_chars = 0
-        batches[-1].append(item)
-        cur_chars += len(item[1])
-    if not batches[0]:
+    if not pending:
         return wav_paths
 
-    log.info("Processing %d chunks in %d batches", len(pending), len(batches))
+    log.info("Processing %d chunks", len(pending))
+
+    client = httpx.Client(base_url=base_url, timeout=300)
     ch_wavs: dict[int, list[np.ndarray]] = {}
     sr = 0
 
-    with torch.inference_mode():
-        for bi, batch in enumerate(batches):
-            texts = [t for _, t in batch]
-            t0 = time.monotonic()
-            wavs, sr = model.generate_custom_voice(
-                text=texts,
-                language=["Auto"] * len(texts),
-                speaker=[speaker] * len(texts),
-            )
-            el = time.monotonic() - t0
-            dur = sum(len(w) for w in wavs) / sr
-            log.info(
-                "Batch %d/%d  %d chunks  %.1fs audio in %.1fs  (RTF: %.2f)",
-                bi + 1,
-                len(batches),
-                len(texts),
-                dur,
-                el,
-                dur / el if el else 0,
-            )
-            for (idx, _), w in zip(batch, wavs):
-                ch_wavs.setdefault(idx, []).append(w)
-            del wavs
-            if dev == "cuda":
-                torch.cuda.empty_cache()
+    for ci, (idx, text) in enumerate(pending):
+        payload: dict = {"text": text, "format": "wav", "normalize": True}
+        if reference_id:
+            payload["reference_id"] = reference_id
+
+        t0 = time.monotonic()
+        resp = client.post("/v1/tts", json=payload)
+        resp.raise_for_status()
+        data, sr = sf.read(io.BytesIO(resp.content))
+        el = time.monotonic() - t0
+        dur = len(data) / sr
+        log.info(
+            "Chunk %d/%d  ch %d  %.1fs audio in %.1fs  (RTF: %.2f)",
+            ci + 1,
+            len(pending),
+            starting_chapter + idx,
+            dur,
+            el,
+            dur / el if el else 0,
+        )
+        ch_wavs.setdefault(idx, []).append(data)
+
+    client.close()
 
     for idx, parts in ch_wavs.items():
         audio = np.concatenate(parts).astype(np.float32)

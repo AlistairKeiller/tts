@@ -1,33 +1,16 @@
 [project]
 name = "tts"
 version = "0.1.0"
-description = "Convert EPUB e-books to M4B audiobooks via Qwen3-TTS"
+description = "Convert EPUB e-books to M4B audiobooks via Fish Speech S2 Pro"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
     "beautifulsoup4>=4.12",
-    "chonkie>=1.6",
+    "chonkie>=1.6.1",
     "ebooklib>=0.20",
     "ffmpeg-python>=0.2",
-    "qwen-tts@git+https://github.com/QwenLM/Qwen3-TTS",
+    "httpx>=0.27",
+    "numpy>=1.26",
     "soundfile>=0.13.1",
     "typer>=0.24.1",
-    "torch>=2.10.0",
-    "torchaudio>=2.10.0",
-    "flash-attn>=2.8.3",
 ]
-
-[tool.uv.sources]
-torch = [{ index = "pytorch-cu130" }]
-torchaudio = [{ index = "pytorch-cu130" }]
-flash-attn = [
-    { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu130torch2.10-cp314-cp314-linux_x86_64.whl" },
-]
-
-[tool.uv]
-environments = ["sys_platform == 'linux'"]
-
-[[tool.uv.index]]
-name = "pytorch-cu130"
-url = "https://download.pytorch.org/whl/cu130"
-explicit = true

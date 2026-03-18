@@ -10,7 +10,7 @@ from epub_parser import parse_epub
 from m4b import build_m4b, check_ffmpeg
 from tts import synthesise_chapters
 
-app = typer.Typer(help="Convert an EPUB to an M4B audiobook via Qwen3-TTS.")
+app = typer.Typer(help="Convert an EPUB to an M4B audiobook via Fish Speech S2 Pro.")
 
 
 @app.command()
@@ -19,7 +19,12 @@ def main(
     output: Annotated[
         Optional[Path], typer.Option("-o", help="Output .m4b path.")
     ] = None,
-    speaker: Annotated[str, typer.Option(help="Speaker voice.")] = "Aiden",
+    base_url: Annotated[
+        str, typer.Option("--url", help="Fish Speech server URL.")
+    ] = "http://127.0.0.1:8080",
+    reference_id: Annotated[
+        Optional[str], typer.Option("--ref", help="Voice reference ID.")
+    ] = None,
     bitrate: Annotated[str, typer.Option(help="AAC bitrate.")] = "48k",
     starting_chapter: Annotated[
         int, typer.Option(help="Starting chapter index (0-based).")
@@ -36,6 +41,7 @@ def main(
         level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s"
     )
     check_ffmpeg()
+
     chapters = parse_epub(str(epub))
     assert chapters, "No chapters found in EPUB"
 
@@ -47,19 +53,17 @@ def main(
         return
 
     wav_dir = Path(tempfile.mkdtemp(prefix="epub2ab_"))
-
     wav_paths = synthesise_chapters(
         chapters,
         wav_dir,
-        speaker=speaker,
+        base_url=base_url,
+        reference_id=reference_id,
         starting_chapter=starting_chapter,
         ending_chapter=ending_chapter,
     )
-
     assert wav_paths, "No chapters were synthesised"
 
     selected = chapters[starting_chapter:ending_chapter]
-    # Only include titles for chapters that actually produced WAVs
     titles = [c.title for c in selected][: len(wav_paths)]
 
     out = output or epub.with_suffix(".m4b")
