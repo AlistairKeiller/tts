@@ -1,4 +1,5 @@
 import logging
+import time
 from pathlib import Path
 
 import numpy as np
@@ -23,7 +24,6 @@ def synthesise_chapters(
 ) -> list[Path]:
     """Generate one WAV per chapter, return list of paths."""
     output_dir.mkdir(parents=True, exist_ok=True)
-
     device = "cuda" if torch.cuda.is_available() else "cpu"
     log.info("Using device: %s", device)
 
@@ -50,16 +50,33 @@ def synthesise_chapters(
                 log.info("Skipping chapter %d (already exists)", i)
                 wav_paths.append(wav_path)
                 continue
-            log.info("Chapter %d/%d  '%s'", i + 1, len(chapters), ch.title[:40])
+
             chunks = [c.text for c in chunker.chunk(ch.text)]
+
+            t0 = time.monotonic()
             wavs, sr = model.generate_custom_voice(
                 text=chunks,
                 language=["Auto"] * len(chunks),
                 speaker=[speaker] * len(chunks),
             )
-            sf.write(str(wav_path), np.concatenate(wavs).astype(np.float32), sr)
-            del wavs
+            elapsed = time.monotonic() - t0
+
+            audio = np.concatenate(wavs).astype(np.float32)
+            audio_dur = len(audio) / sr
+            rtf = audio_dur / elapsed if elapsed > 0 else float("inf")
+
+            log.info(
+                "Chapter %d/%d  '%s'  %.1fs audio in %.1fs  (RTF: %.2f)",
+                i + 1,
+                len(chapters),
+                ch.title[:40],
+                audio_dur,
+                elapsed,
+                rtf,
+            )
+
+            sf.write(str(wav_path), audio, sr, format="WAV", subtype="FLOAT")
+            del wavs, audio
             torch.cuda.empty_cache()
             wav_paths.append(wav_path)
-
     return wav_paths
