@@ -14,7 +14,7 @@ dependencies = [
     "typer>=0.24.1",
     "torch>=2.10.0",
     "torchaudio>=2.10.0",
-    "flash-attn>=2.7; sys_platform == 'linux'",
+    "fa4; sys_platform == 'linux'",
 ]
 [tool.uv.sources]
 torch = [
