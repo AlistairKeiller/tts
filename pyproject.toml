@@ -9,16 +9,14 @@ dependencies = [
     "chonkie>=1.6",
     "ebooklib>=0.20",
     "ffmpeg-python>=0.2",
-    "qwen-tts>=0.1.1",
+    "qwen-tts@git+https://github.com/AlistairKeiller/Qwen3-TTS",
     "soundfile>=0.13.1",
     "typer>=0.24.1",
     "torch>=2.10.0",
     "torchaudio>=2.10.0",
-    "transformers",
     "flash-attn-4",
 ]
 [tool.uv.sources]
-transformers = { git = "https://github.com/huggingface/transformers" }
 torch = [{ index = "pytorch-cu130" }]
 torchaudio = [{ index = "pytorch-cu130" }]
 [tool.uv.extra-build-dependencies]
@@ -27,7 +25,6 @@ flash-attn = ["torch"]
 [tool.uv]
 prerelease = "allow"
 environments = ["sys_platform == 'linux'"]
-override-dependencies = ["transformers>=4.57.3"]
 
 [[tool.uv.index]]
 name = "pytorch-cu130"
