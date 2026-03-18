@@ -13,7 +13,7 @@ class Chapter:
 
 def parse_epub(path: str) -> list[Chapter]:
     """Extract chapters from an EPUB in spine (reading) order."""
-    book = epub.read_epub(path, options={"ignore_ncx": True})
+    book = epub.read_epub(path)
     items = {
         item.get_id(): item for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT)
     }

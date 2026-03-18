@@ -10,7 +10,7 @@ from qwen_tts import Qwen3TTSModel
 from epub_parser import Chapter
 
 log = logging.getLogger(__name__)
-chunker = SentenceChunker(chunk_size=500)
+chunker = SentenceChunker(chunk_size=1500)
 
 
 def _detect_device() -> str:
@@ -34,19 +34,30 @@ def synthesise_chapters(
 
     device = _detect_device()
     log.info("Using device: %s", device)
-    attn = "flash_attention_2" if device.startswith("cuda") else "eager"
+
+    if device.startswith("cuda"):
+        torch.backends.cudnn.benchmark = True
+
+    attn = "flash_attention_3" if device.startswith("cuda") else "eager"
     model = Qwen3TTSModel.from_pretrained(
         "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
         device_map=device,
         dtype=torch.bfloat16,
         attn_implementation=attn,
     )
+    if device.startswith("cuda"):
+        model = torch.compile(model, mode="reduce-overhead")
 
     wav_paths: list[Path] = []
     with torch.inference_mode():
         for i, ch in enumerate(
             chapters[starting_chapter:ending_chapter], start=starting_chapter
         ):
+            wav_path = output_dir / f"chapter_{i:04d}.wav"
+            if wav_path.exists() and wav_path.stat().st_size > 0:
+                log.info("Skipping chapter %d (already exists)", i)
+                wav_paths.append(wav_path)
+                continue
             log.info("Chapter %d/%d  '%s'", i + 1, len(chapters), ch.title[:40])
             chunks = [c.text for c in chunker.chunk(ch.text)]
             wavs, sr = model.generate_custom_voice(
@@ -54,8 +65,9 @@ def synthesise_chapters(
                 language=["Auto"] * len(chunks),
                 speaker=[speaker] * len(chunks),
             )
-            wav_path = output_dir / f"chapter_{i:04d}.wav"
-            sf.write(str(wav_path), np.concatenate(wavs), sr)
+            sf.write(str(wav_path), np.concatenate(wavs).astype(np.float32), sr)
+            del wavs
+            torch.cuda.empty_cache()
             wav_paths.append(wav_path)
 
     return wav_paths

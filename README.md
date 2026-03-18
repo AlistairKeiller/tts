@@ -1,1 +1,1 @@
-`uv run main.py --torch-backend=auto --extra flash-attn`
+`uv run src/main.py`
