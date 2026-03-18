@@ -63,7 +63,8 @@ def synthesise_chapters(
                     language="english",
                     speaker=speaker,
                 )
-                sr = chunk_sr or sr
+                if chunk_sr is not None:
+                    sr = int(chunk_sr)
                 wavs.append(_to_numpy(wav))
 
             sf.write(str(wav_path), np.concatenate(wavs, dtype=np.float32), sr)
