@@ -14,9 +14,11 @@ dependencies = [
     "typer>=0.24.1",
     "torch>=2.10.0",
     "torchaudio>=2.10.0",
-    "fa4; sys_platform == 'linux'",
+    "transformers",
+    "flash-attn>=2.7; sys_platform == 'linux'",
 ]
 [tool.uv.sources]
+transformers = { git = "https://github.com/huggingface/transformers" }
 torch = [
     { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
     { index = "pytorch-cu130", marker = "sys_platform != 'darwin'" },
