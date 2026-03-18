@@ -14,7 +14,7 @@ dependencies = [
     "typer>=0.24.1",
     "torch>=2.10.0",
     "torchaudio>=2.10.0",
-    "flash-attn>=2.8.3; sys_platform == 'linux'",
+    "flash-attn>=2.7; sys_platform == 'linux'",
 ]
 [tool.uv.sources]
 torch = [
@@ -25,6 +25,9 @@ torchaudio = [
     { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
     { index = "pytorch-cu130", marker = "sys_platform != 'darwin'" },
 ]
+[tool.uv.extra-build-dependencies]
+flash-attn = ["torch"]
+
 [[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
