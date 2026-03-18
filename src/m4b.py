@@ -18,7 +18,7 @@ def build_m4b(
     output: Path,
     *,
     book_title: str = "Audiobook",
-    bitrate: str = "48k",
+    bitrate: str = "128k",
 ) -> None:
     """Merge per-chapter WAVs into a single M4B with chapter markers."""
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -50,6 +50,10 @@ def build_m4b(
             if "libfdk_aac" in subprocess.getoutput("ffmpeg -encoders")
             else "aac"
         )
+        if codec == "aac":
+            print(
+                "Warning: libfdk_aac encoder not found, using built-in aac encoder which may produce lower quality audio. Install libfdk_aac for better results."
+            )
         (
             ffmpeg.input(concat.name, f="concat", safe=0)
             .audio.filter("loudnorm", I=-16, TP=-1.5, LRA=11)
@@ -58,6 +62,7 @@ def build_m4b(
                 map_metadata=1,
                 acodec=codec,
                 audio_bitrate=bitrate,
+                ac=1,
                 movflags="+faststart",
             )
             .global_args("-i", meta.name)
