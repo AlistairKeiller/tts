@@ -37,11 +37,6 @@ def synthesise_chapters(
         dtype=torch.bfloat16,
         attn_implementation=attn,
     )
-    if device.startswith("cuda"):
-        model.talker = torch.compile(model.talker, mode="reduce-overhead")
-        model.code_predictor = torch.compile(
-            model.code_predictor, mode="reduce-overhead"
-        )
 
     wav_paths: list[Path] = []
     with torch.inference_mode():
@@ -80,6 +75,5 @@ def synthesise_chapters(
 
             sf.write(str(wav_path), audio, sr, format="WAV", subtype="FLOAT")
             del wavs, audio
-            torch.cuda.empty_cache()
             wav_paths.append(wav_path)
     return wav_paths
