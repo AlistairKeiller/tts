@@ -11,7 +11,7 @@ from qwen_tts import Qwen3TTSModel
 from epub_parser import Chapter
 
 log = logging.getLogger(__name__)
-chunker = SentenceChunker(chunk_size=1500)
+chunker = SentenceChunker(chunk_size=3000)
 
 
 def synthesise_chapters(
@@ -37,8 +37,8 @@ def synthesise_chapters(
         dtype=torch.bfloat16,
         attn_implementation=attn,
     )
-    # if device.startswith("cuda"):
-    #     model = torch.compile(model, mode="reduce-overhead")
+    if device.startswith("cuda"):
+        model = torch.compile(model, mode="reduce-overhead")
 
     wav_paths: list[Path] = []
     with torch.inference_mode():
