@@ -9,8 +9,8 @@ from qwen_tts import Qwen3TTSModel
 from epub_parser import Chapter
 
 log = logging.getLogger(__name__)
-chunker = SentenceChunker(chunk_size=3000)
-BATCH_CHARS = 60_000
+chunker = SentenceChunker(chunk_size=1500)
+BATCH_CHARS = 500_000
 
 
 def synthesise_chapters(
