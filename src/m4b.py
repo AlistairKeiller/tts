@@ -1,3 +1,5 @@
+"""Merge per-chapter WAVs into a single M4B with chapter markers."""
+
 import shutil
 import subprocess
 import tempfile
@@ -20,7 +22,6 @@ def build_m4b(
     book_title: str = "Audiobook",
     bitrate: str = "128k",
 ) -> None:
-    """Merge per-chapter WAVs into a single M4B with chapter markers."""
     output.parent.mkdir(parents=True, exist_ok=True)
 
     # Build chapter timestamps
@@ -31,14 +32,12 @@ def build_m4b(
         spans.append((t, cursor, cursor + dur))
         cursor += dur
 
-    # Write FFMETADATA1 chapter file
     meta = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
     meta.write(f";FFMETADATA1\ntitle={book_title}\n\n")
     for t, s, e in spans:
         meta.write(f"[CHAPTER]\nTIMEBASE=1/1000\nSTART={s}\nEND={e}\ntitle={t}\n\n")
     meta.close()
 
-    # Write concat file list
     concat = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
     for wp in wav_paths:
         concat.write(f"file '{wp.resolve()}'\n")
@@ -52,8 +51,9 @@ def build_m4b(
         )
         if codec == "aac":
             print(
-                "Warning: libfdk_aac encoder not found, using built-in aac encoder which may produce lower quality audio. Install libfdk_aac for better results."
+                "Warning: using built-in aac encoder. Install libfdk_aac for better quality."
             )
+
         (
             ffmpeg.input(concat.name, f="concat", safe=0)
             .audio.filter("loudnorm", I=-16, TP=-1.5, LRA=11)

@@ -1,33 +1,31 @@
-import asyncio, io, logging, re, shutil, tempfile, time
+"""Synthesise chapters to WAV files using Chatterbox TTS."""
+
+import logging
+import re
+import time
 from pathlib import Path
 
-import httpx, numpy as np, soundfile as sf
-from epub_parser import Chapter
+import numpy as np
+import soundfile as sf
+import torch
+import torchaudio
 
 log = logging.getLogger(__name__)
 
 MAX_CHUNK_CHARS = 700
-MERGE_THRESHOLD = 200  # merge consecutive paragraphs shorter than this
-MAX_CONCURRENT = 1
-MAX_RETRIES = 3
+MERGE_THRESHOLD = 200
 SILENCE_BODY = 0.25
 SILENCE_TITLE = 1.0
 SILENCE_CHAPTER_END = 0.5
 
-NARRATOR_TEXT = (
-    "In the quiet hours before dawn, the world seems to hold its breath. "
-    "Every story begins with a single moment, a choice that sets everything in motion. "
-    "The pages ahead are filled with wonder and possibility, "
-    "and it is my pleasure to guide you through each one."
-)
+
+# ── Text chunking ────────────────────────────────────────────────────────────
 
 
 def _chunk_text(text: str) -> list[str]:
-    """Split on paragraphs, merge short ones, subdivide long ones."""
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
 
-    # Merge consecutive short paragraphs (dialogue, etc.)
-    merged = []
+    merged: list[str] = []
     buf = ""
     for para in paragraphs:
         if buf and (
@@ -41,8 +39,7 @@ def _chunk_text(text: str) -> list[str]:
     if buf:
         merged.append(buf)
 
-    # Subdivide any that are still too long
-    chunks = []
+    chunks: list[str] = []
     for para in merged:
         if len(para) <= MAX_CHUNK_CHARS:
             chunks.append(para)
@@ -59,12 +56,14 @@ def _chunk_text(text: str) -> list[str]:
     return chunks
 
 
+# ── Audio helpers ────────────────────────────────────────────────────────────
+
+
 def _silence(sr: int, seconds: float) -> np.ndarray:
     return np.zeros(int(seconds * sr), dtype=np.float32)
 
 
 def _join(parts: list[np.ndarray], sr: int) -> np.ndarray:
-    """Join chunks: longer pause after title (index 0), shorter between body."""
     if not parts:
         return np.array([], dtype=np.float32)
     pieces = [parts[0], _silence(sr, SILENCE_TITLE)]
@@ -74,154 +73,94 @@ def _join(parts: list[np.ndarray], sr: int) -> np.ndarray:
     return np.concatenate(pieces)
 
 
-async def _get_ref(
-    client: httpx.AsyncClient, ref_audio: Path | None, ref_dir: Path
-) -> dict:
-    if ref_audio and ref_audio.exists():
-        dst = ref_dir / "narrator.wav"
-        shutil.copy2(ref_audio, dst)
-        log.info("Using supplied reference: %s", ref_audio)
-        return {"audio_path": str(dst), "text": NARRATOR_TEXT}
-
-    resp = await client.post(
-        "/v1/audio/speech",
-        json={
-            "input": f"[calm, professional, articulate male narration] {NARRATOR_TEXT}",
-        },
-    )
-    resp.raise_for_status()
-    dst = ref_dir / "narrator.wav"
-    dst.write_bytes(resp.content)
-    log.info("Narrator ref generated (%.1f KB)", len(resp.content) / 1024)
-    return {"audio_path": str(dst), "text": NARRATOR_TEXT}
+# ── Synthesis ────────────────────────────────────────────────────────────────
 
 
-async def _synth(client, sem, payload, ch_i, ci, total):
-    async with sem:
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                t0 = time.monotonic()
-                resp = await client.post("/v1/audio/speech", json=payload)
-                resp.raise_for_status()
-                data, sr = sf.read(io.BytesIO(resp.content))
-                el = time.monotonic() - t0
-                log.info(
-                    "Chunk %d/%d ch%d %.1fs in %.1fs RTF:%.2f",
-                    ci + 1,
-                    total,
-                    ch_i,
-                    len(data) / sr,
-                    el,
-                    len(data) / sr / el if el else 0,
-                )
-                return ch_i, ci, data, sr
-            except (httpx.HTTPStatusError, httpx.TransportError) as e:
-                if attempt == MAX_RETRIES:
-                    raise
-                wait = 2**attempt
-                log.warning(
-                    "Chunk %d/%d failed (attempt %d/%d): %s — retrying in %ds",
-                    ci + 1,
-                    total,
-                    attempt,
-                    MAX_RETRIES,
-                    e,
-                    wait,
-                )
-                await asyncio.sleep(wait)
+def _load_model(turbo: bool):
+    if turbo:
+        from chatterbox import ChatterboxTTSTurbo
+
+        log.info("Loading Chatterbox Turbo …")
+        return ChatterboxTTSTurbo.from_pretrained(device="cuda")
+    else:
+        from chatterbox import ChatterboxTTS
+
+        log.info("Loading Chatterbox …")
+        return ChatterboxTTS.from_pretrained(device="cuda")
 
 
-async def _run(
+def synthesise_chapters(
     chapters,
-    output_dir,
+    output_dir: Path,
     *,
-    base_url,
-    starting_chapter,
-    ending_chapter,
-    max_concurrent,
-    ref_audio,
-):
+    ref_audio: Path | None = None,
+    starting_chapter: int = 0,
+    ending_chapter: int | None = None,
+    turbo: bool = True,
+    exaggeration: float = 0.5,
+    cfg_weight: float = 0.5,
+) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     sel = chapters[starting_chapter:ending_chapter]
     wav_paths = [
         output_dir / f"chapter_{starting_chapter + i:04d}.wav" for i in range(len(sel))
     ]
 
-    jobs = []
-    ci = 0
-    for i, ch in enumerate(sel):
-        if wav_paths[i].exists() and wav_paths[i].stat().st_size > 0:
-            log.info("Skipping chapter %d (exists)", starting_chapter + i)
-            continue
-        for text in [ch.title] + _chunk_text(ch.text):
-            jobs.append((i, ci, text))
-            ci += 1
+    model = _load_model(turbo)
+    sr = model.sr
+    ref = str(ref_audio) if ref_audio and ref_audio.exists() else None
 
-    if not jobs:
-        return wav_paths
-
-    log.info("Processing %d chunks, %d concurrent", len(jobs), max_concurrent)
-    limits = httpx.Limits(
-        max_connections=max_concurrent + 4, max_keepalive_connections=max_concurrent
+    total_chunks = sum(
+        1 + len(_chunk_text(ch.text))
+        for i, ch in enumerate(sel)
+        if not (wav_paths[i].exists() and wav_paths[i].stat().st_size > 0)
     )
-    ref_dir = Path(tempfile.mkdtemp(prefix="ref_"))
+    chunk_num = 0
 
-    try:
-        async with httpx.AsyncClient(
-            base_url=base_url, timeout=600, limits=limits
-        ) as client:
-            ref = await _get_ref(client, ref_audio, ref_dir)
-            sem = asyncio.Semaphore(max_concurrent)
-            tasks = [
-                _synth(
-                    client,
-                    sem,
-                    {"input": txt, "references": [ref]},
-                    starting_chapter + ch_i,
-                    ci,
-                    len(jobs),
-                )
-                for ch_i, ci, txt in jobs
-            ]
-            results = await asyncio.gather(*tasks)
-    finally:
-        shutil.rmtree(ref_dir, ignore_errors=True)
+    for i, ch in enumerate(sel):
+        wp = wav_paths[i]
+        ch_idx = starting_chapter + i
 
-    by_ch: dict[int, list[tuple[int, np.ndarray]]] = {}
-    sr = results[0][3]
-    for ch_idx, ci, data, _ in results:
-        by_ch.setdefault(ch_idx, []).append((ci, data))
+        if wp.exists() and wp.stat().st_size > 0:
+            log.info("Skipping chapter %d (exists)", ch_idx)
+            continue
 
-    for ch_idx in sorted(by_ch):
-        i = ch_idx - starting_chapter
-        parts = [d for _, d in sorted(by_ch[ch_idx])]
-        audio = _join(parts, sr)
-        sf.write(str(wav_paths[i]), audio, sr, format="WAV", subtype="FLOAT")
-        log.info(
-            "Wrote ch%d '%s' %.1fs", ch_idx + 1, sel[i].title[:40], len(audio) / sr
-        )
+        texts = [ch.title] + _chunk_text(ch.text)
+        parts: list[np.ndarray] = []
+
+        for text in texts:
+            chunk_num += 1
+            t0 = time.monotonic()
+
+            kwargs = {}
+            if ref:
+                kwargs["audio_prompt_path"] = ref
+            if not turbo:
+                kwargs["exaggeration"] = exaggeration
+                kwargs["cfg_weight"] = cfg_weight
+
+            with torch.inference_mode():
+                wav = model.generate(text, **kwargs)
+
+            audio = wav.squeeze().cpu().numpy().astype(np.float32)
+            dur = len(audio) / sr
+            elapsed = time.monotonic() - t0
+
+            log.info(
+                "Chunk %d/%d ch%d %.1fs in %.1fs RTF:%.2f",
+                chunk_num,
+                total_chunks,
+                ch_idx,
+                dur,
+                elapsed,
+                dur / elapsed if elapsed else 0,
+            )
+            parts.append(audio)
+
+        # Write chapter to disk immediately — don't accumulate in RAM
+        joined = _join(parts, sr)
+        sf.write(str(wp), joined, sr, format="WAV", subtype="FLOAT")
+        log.info("Wrote ch%d '%s' %.1fs", ch_idx + 1, ch.title[:40], len(joined) / sr)
+        del parts, joined
 
     return [p for p in wav_paths if p.exists() and p.stat().st_size > 0]
-
-
-def synthesise_chapters(
-    chapters,
-    output_dir,
-    *,
-    base_url="http://127.0.0.1:8000",
-    ref_audio=None,
-    starting_chapter=0,
-    ending_chapter=None,
-    max_workers=MAX_CONCURRENT,
-):
-    return asyncio.run(
-        _run(
-            chapters,
-            output_dir,
-            base_url=base_url,
-            ref_audio=ref_audio,
-            starting_chapter=starting_chapter,
-            ending_chapter=ending_chapter,
-            max_concurrent=max_workers,
-        )
-    )
