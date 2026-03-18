@@ -7,10 +7,12 @@ from epub_parser import Chapter
 log = logging.getLogger(__name__)
 
 MAX_CHUNK_CHARS = 1500
+MERGE_THRESHOLD = 200  # merge consecutive paragraphs shorter than this
 MAX_CONCURRENT = 24
-SILENCE_BODY = 0.25  # seconds between body chunks
-SILENCE_TITLE = 1.0  # seconds after chapter title
-SILENCE_CHAPTER_END = 0.5  # seconds at end of chapter
+MAX_RETRIES = 3
+SILENCE_BODY = 0.25
+SILENCE_TITLE = 1.0
+SILENCE_CHAPTER_END = 0.5
 
 NARRATOR_TEXT = (
     "In the quiet hours before dawn, the world seems to hold its breath. "
@@ -21,12 +23,27 @@ NARRATOR_TEXT = (
 
 
 def _chunk_text(text: str) -> list[str]:
-    """Split on paragraphs; subdivide long ones at sentence boundaries."""
+    """Split on paragraphs, merge short ones, subdivide long ones."""
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+
+    # Merge consecutive short paragraphs (dialogue, etc.)
+    merged = []
+    buf = ""
+    for para in paragraphs:
+        if buf and (
+            len(buf) + len(para) + 1 > MAX_CHUNK_CHARS
+            or (len(buf) >= MERGE_THRESHOLD and len(para) >= MERGE_THRESHOLD)
+        ):
+            merged.append(buf)
+            buf = para
+        else:
+            buf = f"{buf}\n{para}".strip() if buf else para
+    if buf:
+        merged.append(buf)
+
+    # Subdivide any that are still too long
     chunks = []
-    for para in text.split("\n\n"):
-        para = para.strip()
-        if not para:
-            continue
+    for para in merged:
         if len(para) <= MAX_CHUNK_CHARS:
             chunks.append(para)
             continue
@@ -81,21 +98,37 @@ async def _get_ref(
 
 async def _synth(client, sem, payload, ch_i, ci, total):
     async with sem:
-        t0 = time.monotonic()
-        resp = await client.post("/v1/audio/speech", json=payload)
-        resp.raise_for_status()
-        data, sr = sf.read(io.BytesIO(resp.content))
-        el = time.monotonic() - t0
-        log.info(
-            "Chunk %d/%d ch%d %.1fs in %.1fs RTF:%.2f",
-            ci + 1,
-            total,
-            ch_i,
-            len(data) / sr,
-            el,
-            len(data) / sr / el if el else 0,
-        )
-    return ch_i, ci, data, sr
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                t0 = time.monotonic()
+                resp = await client.post("/v1/audio/speech", json=payload)
+                resp.raise_for_status()
+                data, sr = sf.read(io.BytesIO(resp.content))
+                el = time.monotonic() - t0
+                log.info(
+                    "Chunk %d/%d ch%d %.1fs in %.1fs RTF:%.2f",
+                    ci + 1,
+                    total,
+                    ch_i,
+                    len(data) / sr,
+                    el,
+                    len(data) / sr / el if el else 0,
+                )
+                return ch_i, ci, data, sr
+            except (httpx.HTTPStatusError, httpx.TransportError) as e:
+                if attempt == MAX_RETRIES:
+                    raise
+                wait = 2**attempt
+                log.warning(
+                    "Chunk %d/%d failed (attempt %d/%d): %s — retrying in %ds",
+                    ci + 1,
+                    total,
+                    attempt,
+                    MAX_RETRIES,
+                    e,
+                    wait,
+                )
+                await asyncio.sleep(wait)
 
 
 async def _run(
@@ -131,24 +164,28 @@ async def _run(
     limits = httpx.Limits(
         max_connections=max_concurrent + 4, max_keepalive_connections=max_concurrent
     )
+    ref_dir = Path(tempfile.mkdtemp(prefix="ref_"))
 
-    async with httpx.AsyncClient(
-        base_url=base_url, timeout=600, limits=limits
-    ) as client:
-        ref = await _get_ref(client, ref_audio, Path(tempfile.mkdtemp(prefix="ref_")))
-        sem = asyncio.Semaphore(max_concurrent)
-        tasks = [
-            _synth(
-                client,
-                sem,
-                {"input": txt, "references": [ref]},
-                starting_chapter + ch_i,
-                ci,
-                len(jobs),
-            )
-            for ch_i, ci, txt in jobs
-        ]
-        results = await asyncio.gather(*tasks)
+    try:
+        async with httpx.AsyncClient(
+            base_url=base_url, timeout=600, limits=limits
+        ) as client:
+            ref = await _get_ref(client, ref_audio, ref_dir)
+            sem = asyncio.Semaphore(max_concurrent)
+            tasks = [
+                _synth(
+                    client,
+                    sem,
+                    {"input": txt, "references": [ref]},
+                    starting_chapter + ch_i,
+                    ci,
+                    len(jobs),
+                )
+                for ch_i, ci, txt in jobs
+            ]
+            results = await asyncio.gather(*tasks)
+    finally:
+        shutil.rmtree(ref_dir, ignore_errors=True)
 
     by_ch: dict[int, list[tuple[int, np.ndarray]]] = {}
     sr = results[0][3]
