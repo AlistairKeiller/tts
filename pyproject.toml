@@ -3,15 +3,15 @@ name = "epub2audiobook"
 version = "0.1.0"
 description = "Convert EPUB e-books to M4B audiobooks via Chatterbox TTS"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
     "chatterbox-tts>=0.1.6",
-    "beautifulsoup4>=4.12",
+    "beautifulsoup4>=4.13",
     "ebooklib>=0.20",
     "ffmpeg-python>=0.2",
-    "numpy>=1.26",
+    "numpy",
     "soundfile>=0.13.1",
-    "torchaudio>=2.0",
+    "torchaudio",
     "typer>=0.12",
 ]
 
