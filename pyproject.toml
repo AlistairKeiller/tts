@@ -1,42 +1,15 @@
 [project]
-name = "epub2audiobook"
+name = "tts"
 version = "0.1.0"
-description = "Convert EPUB e-books to M4B audiobooks via Chatterbox TTS"
+description = "Convert EPUB e-books to M4B audiobooks via Fish Speech S2 Pro"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
-    "chatterbox-tts>=0.1.6",
-    "beautifulsoup4>=4.14",
+    "beautifulsoup4>=4.12",
     "ebooklib>=0.20",
     "ffmpeg-python>=0.2",
-    "lxml>=6.0",
-    "mutagen>=1.47",
+    "httpx>=0.27",
+    "numpy>=1.26",
     "soundfile>=0.13.1",
-    "typer>=0.24",
-    "onnx<1.19",
-    "torchaudio",
-    "chonkie",
-    "numpy",
-    "Pillow",
+    "typer>=0.24.1",
 ]
-
-[tool.uv.sources]
-torch = [
-    { index = "pytorch-cu126", marker = "sys_platform == 'linux'" },
-    { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
-]
-torchaudio = [
-    { index = "pytorch-cu126", marker = "sys_platform == 'linux'" },
-    { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
-]
-
-[[tool.uv.index]]
-name = "pytorch-cu126"
-url = "https://download.pytorch.org/whl/cu126"
-explicit = true
-
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
