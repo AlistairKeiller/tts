@@ -9,8 +9,24 @@ from qwen_tts import Qwen3TTSModel
 from epub_parser import Chapter
 
 log = logging.getLogger(__name__)
-chunker = SentenceChunker(chunk_size=1500)
+
+chunker = SentenceChunker(chunk_size=500)
+
 BATCH_CHARS = 125_000
+PAUSE_SECONDS = 0.3
+VOICE_SEED = 42
+
+
+def _silence(sr: int, seconds: float = PAUSE_SECONDS) -> np.ndarray:
+    return np.zeros(int(sr * seconds), dtype=np.float32)
+
+
+def _set_seed(seed: int) -> None:
+    """Pin all RNG sources so every batch produces the same voice characteristics."""
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def synthesise_chapters(
@@ -60,16 +76,19 @@ def synthesise_chapters(
     with torch.inference_mode():
         for bi, batch in enumerate(batches):
             texts = [t for _, t in batch]
+
+            _set_seed(VOICE_SEED)
+
             t0 = time.monotonic()
             wavs, sr = model.generate_custom_voice(
                 text=texts,
-                language=["Auto"] * len(texts),
+                language=["English"] * len(texts),
                 speaker=[speaker] * len(texts),
             )
             el = time.monotonic() - t0
             dur = sum(len(w) for w in wavs) / sr
             log.info(
-                "Batch %d/%d  %d chunks  %.1fs audio in %.1fs  (RTF: %.2f)",
+                "Batch %d/%d  %d chunks  %.1fs audio  in %.1fs  (RTF: %.2f)",
                 bi + 1,
                 len(batches),
                 len(texts),
@@ -83,11 +102,18 @@ def synthesise_chapters(
             if dev == "cuda":
                 torch.cuda.empty_cache()
 
+    pause = _silence(sr, PAUSE_SECONDS)
+
     for idx, parts in ch_wavs.items():
-        audio = np.concatenate(parts).astype(np.float32)
+        interleaved: list[np.ndarray] = []
+        for part in parts:
+            interleaved.append(part.astype(np.float32))
+            interleaved.append(pause)
+        audio = np.concatenate(interleaved[:-1])
+
         sf.write(str(wav_paths[idx]), audio, sr, format="WAV", subtype="FLOAT")
         log.info(
-            "Wrote ch %d '%s' %.1fs",
+            "Wrote ch %d '%s'  %.1fs",
             starting_chapter + idx + 1,
             sel[idx].title[:40],
             len(audio) / sr,
