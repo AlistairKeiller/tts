@@ -33,12 +33,9 @@ PAUSE = 0.3
 MAX_RETRIES = 5
 MIN_CHAPTER_DURATION = 1.0  # seconds
 
-NARRATOR_TEXT = (
-    "In the quiet hours before dawn, the world seems to hold its breath. "
-    "Every story begins with a single moment, a choice that sets everything in motion. "
-    "The pages ahead are filled with wonder and possibility, "
-    "and it is my pleasure to guide you through each one."
-)
+NARRATOR_TEXT = """
+"...And so, I cleaved the Snow Tyrant's head clean off." He finished the description of the battle with a thoughtful expression, looking at the stars burning in the cold black sky beyond the window. "I think that it was mostly lying through its teeth to confuse me — well, actually, I don't think that it had a mouth, so it was lying through whatever it had instead of teeth. Puppeteer was definitely not as immune to the madness of Corruption as it presented itself, at least. As for the rest…" He frowned. "...Maybe there was some truth to what it said, after all. Even if it twisted the meaning of it all entirely to sow seeds of doubt into my mind." Speaking of which, Sunny had felt a few of those still growing in his heart after returning from Ariel's Game — soon to give birth to larval Worm's of Doubt, certainly. He poisoned them with Death Will and obliterated them completely, shivering in fear and disgust, then asked Nephis to purify him with her radiant flames just in case. Kai underwent the same cleansing.
+"""
 
 # ── EPUB ─────────────────────────────────────────────────────────────────────
 
@@ -213,7 +210,10 @@ async def _get_ref(
     resp = await client.post(
         "/v1/audio/speech",
         json={
-            "input": f"[calm, professional, articulate male narration] {NARRATOR_TEXT}"
+            "input": f"[calm, professional, articulate male narration] {NARRATOR_TEXT}",
+            "seed": 42,
+            "temperature": 0.3,
+            "top_p": 0.7,
         },
     )
     resp.raise_for_status()
@@ -339,7 +339,13 @@ async def _run(
                 tasks = []
                 for text in texts:
                     chunk_num += 1
-                    payload = {"input": text, "references": [ref]}
+                    payload = {
+                        "input": text,
+                        "references": [ref],
+                        "seed": 42,
+                        "temperature": 0.3,
+                        "top_p": 0.7,
+                    }
                     tasks.append(
                         _synth_chunk(client, sem, payload, chunk_num, total_chunks)
                     )
