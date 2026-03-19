@@ -12,7 +12,7 @@ log = logging.getLogger(__name__)
 
 chunker = SentenceChunker(chunk_size=500)
 
-BATCH_CHARS = 125_000
+BATCH_CHARS = 62_500
 PAUSE_SECONDS = 0.3
 VOICE_SEED = 42
 
