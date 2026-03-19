@@ -10,7 +10,10 @@ dependencies = [
     "ebooklib>=0.20",
     "ffmpeg-python>=0.2",
     "lxml>=6.0.2",
+    "mutagen>=1.47",
+    "nest-asyncio>=1.6",
     "numpy>=2.4",
+    "Pillow>=12.1",
     "soundfile>=0.13",
     "typer>=0.24",
 ]

@@ -9,8 +9,10 @@ import shutil
 import subprocess
 import tempfile
 import time
+import warnings
 import zipfile
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -28,7 +30,8 @@ from lxml import etree
 log = logging.getLogger(__name__)
 chunker = SentenceChunker(chunk_size=500)
 PAUSE = 0.3
-MAX_RETRIES = 3
+MAX_RETRIES = 5
+MIN_CHAPTER_DURATION = 1.0  # seconds
 
 NARRATOR_TEXT = (
     "In the quiet hours before dawn, the world seems to hold its breath. "
@@ -123,7 +126,10 @@ class BookMeta:
 
 
 def parse_epub(path: str) -> tuple[list[Chapter], BookMeta]:
-    book = epub.read_epub(path)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        book = epub.read_epub(path)
+
     t = book.get_metadata("DC", "title")
     a = book.get_metadata("DC", "creator")
     meta = BookMeta(
@@ -165,6 +171,7 @@ def _fix_caps(s: str) -> str:
 
 
 def _merge_short(sents: list[str], min_words: int = 6) -> list[str]:
+    """Merge sentences shorter than min_words into their neighbours."""
     if not sents:
         return []
     out: list[str] = []
@@ -186,6 +193,7 @@ def _merge_short(sents: list[str], min_words: int = 6) -> list[str]:
 
 
 def _chunk(text: str) -> list[str]:
+    """Split text into TTS-friendly chunks via chonkie + short-sentence merging."""
     return _merge_short([c.text for c in chunker.chunk(text)])
 
 
@@ -230,6 +238,8 @@ async def _synth_chunk(
                 resp = await client.post("/v1/audio/speech", json=payload)
                 resp.raise_for_status()
                 data, sr = sf.read(io.BytesIO(resp.content))
+                if len(data) == 0:
+                    raise ValueError("Server returned empty audio")
                 el = time.monotonic() - t0
                 log.info(
                     "Chunk %d/%d %.1fs in %.1fs RTF:%.2f",
@@ -240,7 +250,12 @@ async def _synth_chunk(
                     len(data) / sr / el if el else 0,
                 )
                 return data.astype(np.float32), sr
-            except (httpx.HTTPStatusError, httpx.TransportError) as e:
+            except (
+                httpx.HTTPStatusError,
+                httpx.TransportError,
+                sf.LibsndfileError,
+                ValueError,
+            ) as e:
                 if attempt == MAX_RETRIES:
                     raise
                 wait = 2**attempt
@@ -252,6 +267,13 @@ async def _synth_chunk(
                     wait,
                 )
                 await asyncio.sleep(wait)
+
+
+def _atomic_write_wav(path: Path, audio: np.ndarray, sr: int) -> None:
+    """Write a WAV file atomically via rename to avoid corrupt partial files."""
+    tmp_path = path.with_suffix(".tmp.wav")
+    sf.write(str(tmp_path), audio, sr, format="WAV", subtype="FLOAT")
+    tmp_path.rename(path)
 
 
 async def _run(
@@ -272,8 +294,18 @@ async def _run(
     chapter_jobs: list[tuple[int, list[str]]] = []
     for i, ch in enumerate(sel):
         if wav_paths[i].exists() and wav_paths[i].stat().st_size > 0:
-            log.info("Skip ch%d (exists)", start + i)
-            continue
+            try:
+                info = sf.info(str(wav_paths[i]))
+                if info.duration >= MIN_CHAPTER_DURATION:
+                    log.info("Skip ch%d (exists, %.1fs)", start + i, info.duration)
+                    continue
+                log.warning(
+                    "ch%d exists but too short (%.2fs) — regenerating",
+                    start + i,
+                    info.duration,
+                )
+            except Exception:
+                log.warning("ch%d exists but unreadable — regenerating", start + i)
         texts = [_fix_caps(ch.title)] + [_fix_caps(t) for t in _chunk(ch.text)]
         chapter_jobs.append((i, texts))
 
@@ -291,17 +323,18 @@ async def _run(
     limits = httpx.Limits(
         max_connections=max_concurrent + 4, max_keepalive_connections=max_concurrent
     )
+    timeout = httpx.Timeout(connect=15, read=300, write=30, pool=30)
     ref_dir = Path(tempfile.mkdtemp(prefix="ref_"))
+    failed_chapters: list[int] = []
 
     try:
         async with httpx.AsyncClient(
-            base_url=base_url, timeout=600, limits=limits
+            base_url=base_url, timeout=timeout, limits=limits
         ) as client:
             ref = await _get_ref(client, ref_audio, ref_dir)
             sem = asyncio.Semaphore(max_concurrent)
             chunk_num = 0
 
-            # Process one chapter at a time, but chunks within a chapter run concurrently
             for i, texts in chapter_jobs:
                 tasks = []
                 for text in texts:
@@ -311,9 +344,22 @@ async def _run(
                         _synth_chunk(client, sem, payload, chunk_num, total_chunks)
                     )
 
-                results = await asyncio.gather(*tasks)
+                try:
+                    results = await asyncio.gather(*tasks)
+                except Exception:
+                    log.exception(
+                        "ch%d '%s' failed — skipping",
+                        start + i + 1,
+                        sel[i].title[:40],
+                    )
+                    failed_chapters.append(start + i + 1)
+                    continue
 
-                # Interleave silence between chunks
+                if not results:
+                    log.warning("ch%d produced no audio — skipping", start + i + 1)
+                    failed_chapters.append(start + i + 1)
+                    continue
+
                 sr = results[0][1]
                 gap = np.zeros(int(PAUSE * sr), dtype=np.float32)
                 parts: list[np.ndarray] = []
@@ -321,7 +367,7 @@ async def _run(
                     parts.extend([audio, gap])
 
                 joined = np.concatenate(parts)
-                sf.write(str(wav_paths[i]), joined, sr, format="WAV", subtype="FLOAT")
+                _atomic_write_wav(wav_paths[i], joined, sr)
                 log.info(
                     "Wrote ch%d '%s' %.1fs",
                     start + i + 1,
@@ -331,6 +377,9 @@ async def _run(
                 del parts, joined
     finally:
         shutil.rmtree(ref_dir, ignore_errors=True)
+
+    if failed_chapters:
+        log.warning("Failed chapters: %s", failed_chapters)
 
     return [p for p in wav_paths if p.exists() and p.stat().st_size > 0]
 
@@ -345,20 +394,38 @@ def synthesise(
     end: int | None = None,
     max_workers: int = 1,
 ) -> list[Path]:
-    return asyncio.run(
-        _run(
-            chapters,
-            output_dir,
-            base_url=base_url,
-            start=start,
-            end=end,
-            max_concurrent=max_workers,
-            ref_audio=ref_audio,
-        )
+    coro = _run(
+        chapters,
+        output_dir,
+        base_url=base_url,
+        start=start,
+        end=end,
+        max_concurrent=max_workers,
+        ref_audio=ref_audio,
     )
+
+    try:
+        asyncio.get_running_loop()
+        import nest_asyncio
+
+        nest_asyncio.apply()
+    except RuntimeError:
+        pass
+
+    return asyncio.run(coro)
 
 
 # ── M4B ──────────────────────────────────────────────────────────────────────
+
+
+@lru_cache(maxsize=1)
+def _aac_codec() -> str:
+    """Detect libfdk_aac once and cache the result."""
+    return (
+        "libfdk_aac"
+        if "libfdk_aac" in subprocess.getoutput("ffmpeg -encoders")
+        else "aac"
+    )
 
 
 def build_m4b(
@@ -385,20 +452,26 @@ def build_m4b(
         f";FFMETADATA1\ntitle={book_title}\nartist={book_author}\nalbum={book_title}\n\n"
     )
     for t, s, e in spans:
-        meta.write(f"[CHAPTER]\nTIMEBASE=1/1000\nSTART={s}\nEND={e}\ntitle={t}\n\n")
+        safe_title = (
+            t.replace("\\", "\\\\")
+            .replace("=", "\\=")
+            .replace(";", "\\;")
+            .replace("#", "\\#")
+        )
+        meta.write(
+            f"[CHAPTER]\nTIMEBASE=1/1000\nSTART={s}\nEND={e}\ntitle={safe_title}\n\n"
+        )
     meta.close()
 
     cat = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
     for wp in wavs:
-        cat.write(f"file '{wp.resolve()}'\n")
+        safe_path = str(wp.resolve()).replace("'", "'\\''")
+        cat.write(f"file '{safe_path}'\n")
     cat.close()
 
     try:
-        codec = (
-            "libfdk_aac"
-            if "libfdk_aac" in subprocess.getoutput("ffmpeg -encoders")
-            else "aac"
-        )
+        codec = _aac_codec()
+        log.info("Using AAC codec: %s", codec)
         (
             ffmpeg.input(cat.name, f="concat", safe=0)
             .audio.filter("loudnorm", I=-16, TP=-1.5, LRA=11)
@@ -414,6 +487,12 @@ def build_m4b(
             .overwrite_output()
             .run(capture_stdout=True, capture_stderr=True)
         )
+    except ffmpeg.Error as e:
+        log.error(
+            "ffmpeg stderr:\n%s",
+            e.stderr.decode(errors="replace") if e.stderr else "(none)",
+        )
+        raise
     finally:
         Path(meta.name).unlink(missing_ok=True)
         Path(cat.name).unlink(missing_ok=True)
@@ -427,6 +506,8 @@ def build_m4b(
             m.save()
         except Exception as e:
             log.warning("Cover embed failed: %s", e)
+
+    log.info("M4B written: %s (%.1f MB)", output, output.stat().st_size / 1024 / 1024)
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
@@ -445,6 +526,12 @@ def main(
     end: Annotated[Optional[int], typer.Option()] = None,
     workers: Annotated[int, typer.Option("-j")] = 2,
     list_chapters: Annotated[bool, typer.Option("--list")] = False,
+    verify: Annotated[
+        bool,
+        typer.Option(
+            "--verify", help="Spot-check WAVs for silence before building M4B."
+        ),
+    ] = False,
 ) -> None:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s"
@@ -453,6 +540,12 @@ def main(
 
     chapters, meta = parse_epub(str(epub))
     assert chapters, "No chapters found"
+    log.info(
+        "Parsed '%s' by %s — %d chapters",
+        meta.title,
+        meta.author,
+        len(chapters),
+    )
 
     if list_chapters:
         for i, ch in enumerate(chapters):
@@ -471,6 +564,10 @@ def main(
             max_workers=workers,
         )
         assert wavs, "Nothing synthesised"
+
+        if verify:
+            _verify_wavs(wavs)
+
         titles = [c.title for c in chapters[start:end]][: len(wavs)]
         out = output or epub.with_suffix(".m4b")
         build_m4b(
@@ -485,6 +582,26 @@ def main(
         print(f"✅ {out}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _verify_wavs(wavs: list[Path]) -> None:
+    """Spot-check WAVs for silence or corruption."""
+    import random
+
+    sample = random.sample(wavs, min(5, len(wavs)))
+    for wp in sample:
+        try:
+            data, sr = sf.read(str(wp))
+            rms = np.sqrt(np.mean(data**2))
+            duration = len(data) / sr
+            if rms < 1e-5:
+                log.warning("⚠️  %s appears to be silence (RMS=%.2e)", wp.name, rms)
+            elif duration < MIN_CHAPTER_DURATION:
+                log.warning("⚠️  %s suspiciously short (%.2fs)", wp.name, duration)
+            else:
+                log.info("✓ %s OK (%.1fs, RMS=%.4f)", wp.name, duration, rms)
+        except Exception as e:
+            log.warning("⚠️  %s unreadable: %s", wp.name, e)
 
 
 if __name__ == "__main__":
