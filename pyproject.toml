@@ -3,13 +3,14 @@ name = "tts"
 version = "0.1.0"
 description = "Convert EPUB e-books to M4B audiobooks via Fish Speech S2 Pro"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
-    "beautifulsoup4>=4.12",
+    "beautifulsoup4>=4.14",
+    "chonkie>=1.6",
     "ebooklib>=0.20",
     "ffmpeg-python>=0.2",
-    "httpx>=0.27",
-    "numpy>=1.26",
-    "soundfile>=0.13.1",
-    "typer>=0.24.1",
+    "lxml>=6.0.2",
+    "numpy>=2.4",
+    "soundfile>=0.13",
+    "typer>=0.24",
 ]
