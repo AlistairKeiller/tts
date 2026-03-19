@@ -1,59 +1,63 @@
 """Synthesise chapters to WAV files using Chatterbox TTS."""
 
 import logging
-import re
 import time
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 import torch
-import torchaudio
+from chonkie import SentenceChunker
 
 log = logging.getLogger(__name__)
 
-MAX_CHUNK_CHARS = 700
-MERGE_THRESHOLD = 200
+MAX_RETRIES = 3
 SILENCE_BODY = 0.25
 SILENCE_TITLE = 1.0
 SILENCE_CHAPTER_END = 0.5
+MIN_WORDS = 6
+
+chunker = SentenceChunker(chunk_size=500)
 
 
-# ── Text chunking ────────────────────────────────────────────────────────────
+# ── Text cleanup ─────────────────────────────────────────────────────────────
 
 
-def _chunk_text(text: str) -> list[str]:
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+def _fix_caps(sent: str) -> str:
+    """Lowercase sentences with 3+ consecutive ALL-CAPS words."""
+    words = sent.split()
+    for i in range(len(words) - 2):
+        if words[i].isupper() and words[i + 1].isupper() and words[i + 2].isupper():
+            return sent.lower().capitalize()
+    return sent
 
-    merged: list[str] = []
+
+def _merge_short(sentences: list[str]) -> list[str]:
+    """Merge sentences shorter than MIN_WORDS with neighbors."""
+    if not sentences:
+        return []
+    result: list[str] = []
     buf = ""
-    for para in paragraphs:
-        if buf and (
-            len(buf) + len(para) + 1 > MAX_CHUNK_CHARS
-            or (len(buf) >= MERGE_THRESHOLD and len(para) >= MERGE_THRESHOLD)
-        ):
-            merged.append(buf)
-            buf = para
+    for sent in sentences:
+        if not buf:
+            buf = sent
+        elif len(buf.split()) < MIN_WORDS:
+            buf += " " + sent
         else:
-            buf = f"{buf}\n{para}".strip() if buf else para
+            result.append(buf)
+            buf = sent
     if buf:
-        merged.append(buf)
+        if result and len(buf.split()) < MIN_WORDS:
+            result[-1] += " " + buf
+        else:
+            result.append(buf)
+    return result
 
-    chunks: list[str] = []
-    for para in merged:
-        if len(para) <= MAX_CHUNK_CHARS:
-            chunks.append(para)
-            continue
-        buf = ""
-        for sent in re.split(r"(?<=[.!?])\s+", para):
-            if buf and len(buf) + len(sent) > MAX_CHUNK_CHARS:
-                chunks.append(buf)
-                buf = sent
-            else:
-                buf = f"{buf} {sent}".strip() if buf else sent
-        if buf:
-            chunks.append(buf)
-    return chunks
+
+def _chunk_chapter(text: str) -> list[str]:
+    """Split chapter text into sentence-level chunks, merging short ones."""
+    sentences = [c.text for c in chunker.chunk(text)]
+    return _merge_short(sentences)
 
 
 # ── Audio helpers ────────────────────────────────────────────────────────────
@@ -73,7 +77,31 @@ def _join(parts: list[np.ndarray], sr: int) -> np.ndarray:
     return np.concatenate(pieces)
 
 
-# ── Synthesis ────────────────────────────────────────────────────────────────
+# ── Generation with retries ──────────────────────────────────────────────────
+
+
+def _generate(model, text: str, ref: str | None, turbo: bool, **kwargs) -> np.ndarray:
+    """Generate audio for a single chunk, retrying up to MAX_RETRIES times."""
+    text = _fix_caps(text.strip())
+    gen_kwargs = {}
+    if ref:
+        gen_kwargs["audio_prompt_path"] = ref
+    if not turbo:
+        gen_kwargs.update(kwargs)
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            wav = model.generate(text, **gen_kwargs)
+            return wav.squeeze().cpu().numpy().astype(np.float32)
+        except Exception as e:
+            if attempt == MAX_RETRIES:
+                raise
+            log.warning(
+                "Attempt %d failed for '%s…': %s — retrying", attempt, text[:50], e
+            )
+
+
+# ── Main entry point ─────────────────────────────────────────────────────────
 
 
 def _load_model(turbo: bool):
@@ -111,7 +139,7 @@ def synthesise_chapters(
     ref = str(ref_audio) if ref_audio and ref_audio.exists() else None
 
     total_chunks = sum(
-        1 + len(_chunk_text(ch.text))
+        1 + len(_chunk_chapter(ch.text))
         for i, ch in enumerate(sel)
         if not (wav_paths[i].exists() and wav_paths[i].stat().st_size > 0)
     )
@@ -125,27 +153,25 @@ def synthesise_chapters(
             log.info("Skipping chapter %d (exists)", ch_idx)
             continue
 
-        texts = [ch.title] + _chunk_text(ch.text)
+        texts = [ch.title] + _chunk_chapter(ch.text)
         parts: list[np.ndarray] = []
 
         for text in texts:
             chunk_num += 1
             t0 = time.monotonic()
 
-            kwargs = {}
-            if ref:
-                kwargs["audio_prompt_path"] = ref
-            if not turbo:
-                kwargs["exaggeration"] = exaggeration
-                kwargs["cfg_weight"] = cfg_weight
-
             with torch.inference_mode():
-                wav = model.generate(text, **kwargs)
+                audio = _generate(
+                    model,
+                    text,
+                    ref,
+                    turbo,
+                    exaggeration=exaggeration,
+                    cfg_weight=cfg_weight,
+                )
 
-            audio = wav.squeeze().cpu().numpy().astype(np.float32)
             dur = len(audio) / sr
             elapsed = time.monotonic() - t0
-
             log.info(
                 "Chunk %d/%d ch%d %.1fs in %.1fs RTF:%.2f",
                 chunk_num,
@@ -157,7 +183,7 @@ def synthesise_chapters(
             )
             parts.append(audio)
 
-        # Write chapter to disk immediately — don't accumulate in RAM
+        # Write immediately — don't accumulate across chapters
         joined = _join(parts, sr)
         sf.write(str(wp), joined, sr, format="WAV", subtype="FLOAT")
         log.info("Wrote ch%d '%s' %.1fs", ch_idx + 1, ch.title[:40], len(joined) / sr)

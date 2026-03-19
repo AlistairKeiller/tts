@@ -41,7 +41,7 @@ def main(
         level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s"
     )
     check_ffmpeg()
-    chapters = parse_epub(str(epub))
+    chapters, meta = parse_epub(str(epub))
     assert chapters, "No chapters found in EPUB"
 
     if list_chapters:
@@ -67,7 +67,15 @@ def main(
             : len(wav_paths)
         ]
         out = output or epub.with_suffix(".m4b")
-        build_m4b(wav_paths, titles, out, book_title=epub.stem, bitrate=bitrate)
+        build_m4b(
+            wav_paths,
+            titles,
+            out,
+            book_title=meta.title,
+            book_author=meta.author,
+            cover_path=meta.cover_path,
+            bitrate=bitrate,
+        )
         print(f"✅ Done — {out}")
     finally:
         shutil.rmtree(wav_dir, ignore_errors=True)

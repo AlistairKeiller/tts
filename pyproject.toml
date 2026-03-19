@@ -6,14 +6,39 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "chatterbox-tts>=0.1.6",
-    "beautifulsoup4>=4.13",
+    "beautifulsoup4>=4.12",
     "ebooklib>=0.20",
     "ffmpeg-python>=0.2",
-    "numpy",
+    "lxml>=5.0",
+    "mutagen>=1.47",
     "soundfile>=0.13.1",
     "torchaudio",
     "typer>=0.12",
+    "chonkie",
+    "numpy",
+    "Pillow",
+]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu126", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
+]
+torchaudio = [
+    { index = "pytorch-cu126", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
 ]
 
 [project.scripts]
 epub2audiobook = "src.main:app"
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
