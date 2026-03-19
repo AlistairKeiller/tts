@@ -8,9 +8,9 @@ from typing import Annotated, Optional
 
 import typer
 
-from .epub_parser import parse_epub
-from .m4b import build_m4b, check_ffmpeg
-from .tts import synthesise_chapters
+from epub_parser import parse_epub
+from m4b import build_m4b, check_ffmpeg
+from tts import synthesise_chapters
 
 app = typer.Typer(help="Convert an EPUB to an M4B audiobook via Chatterbox TTS.")
 

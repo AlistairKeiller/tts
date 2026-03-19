@@ -29,9 +29,6 @@ torchaudio = [
     { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
 ]
 
-[project.scripts]
-epub2audiobook = "src.main:app"
-
 [[tool.uv.index]]
 name = "pytorch-cu126"
 url = "https://download.pytorch.org/whl/cu126"
