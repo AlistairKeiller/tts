@@ -10,3 +10,4 @@ wheels/
 .venv
 
 *.epub
+*.m4b
