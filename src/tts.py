@@ -101,6 +101,7 @@ def synthesise_chapters(
     sr = 0
     bs = 1
     best = 1
+    ramping = True
     pos = 0
 
     log.info("Processing %d chunks", len(pending))
@@ -119,6 +120,7 @@ def synthesise_chapters(
             )
         except torch.cuda.OutOfMemoryError:
             bs = max(1, bs // 2)
+            ramping = False
             _free()
             log.warning("OOM → bs=%d", bs)
             continue
@@ -158,6 +160,9 @@ def synthesise_chapters(
 
         if bs < best:
             bs = best
+        elif ramping:
+            best = bs
+            bs *= 2
         else:
             best = bs
             bs += 1
