@@ -1,3 +1,4 @@
+import gc
 import logging
 import time
 from pathlib import Path
@@ -13,7 +14,9 @@ from epub_parser import Chapter
 log = logging.getLogger(__name__)
 chunker = SentenceChunker(chunk_size=500)
 
-BATCH_CHARS = 31_250
+INITIAL_BATCH = 16
+MIN_BATCH = 1
+GROW_AFTER = 3  # consecutive successes before trying a larger batch
 PAUSE_SECONDS = 0.3
 VOICE_SEED = 42
 ANCHOR_TEXT = (
@@ -33,8 +36,13 @@ def _set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def _free_vram():
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def _build_voice_prompt(dev: str, speaker: str, output_dir: Path):
-    """Generate an anchor clip with CustomVoice, then build a Base-model clone prompt from it."""
     attn = "flash_attention_2" if dev == "cuda" else "eager"
     kw = dict(device_map=dev, dtype=torch.bfloat16, attn_implementation=attn)
 
@@ -48,8 +56,7 @@ def _build_voice_prompt(dev: str, speaker: str, output_dir: Path):
         do_sample=False,
     )
     del cv
-    if dev == "cuda":
-        torch.cuda.empty_cache()
+    _free_vram()
 
     ref_path = output_dir / "reference.wav"
     sf.write(str(ref_path), ref_wavs[0], sr, format="WAV", subtype="FLOAT")
@@ -61,6 +68,30 @@ def _build_voice_prompt(dev: str, speaker: str, output_dir: Path):
         ref_audio=(ref_wavs[0], sr), ref_text=ANCHOR_TEXT
     )
     return base, prompt
+
+
+def _generate_batch(model, texts, voice_prompt):
+    """Try to generate; on OOM return None so caller can shrink and retry."""
+    try:
+        _set_seed(VOICE_SEED)
+        wavs, sr = model.generate_voice_clone(
+            text=texts,
+            language=["English"] * len(texts),
+            voice_clone_prompt=voice_prompt,
+        )
+        return wavs, sr
+    except torch.cuda.OutOfMemoryError:
+        log.warning("OOM on batch of %d — clearing VRAM", len(texts))
+        _free_vram()
+        return None
+
+
+def _flush_chapter(wav_path: Path, parts: list[np.ndarray], sr: int):
+    pause = _silence(sr, PAUSE_SECONDS)
+    pieces = [x for p in parts for x in (p.astype(np.float32), pause)][:-1]
+    audio = np.concatenate(pieces)
+    sf.write(str(wav_path), audio, sr, format="WAV", subtype="FLOAT")
+    log.info("Wrote '%s'  %.1fs", wav_path.name, len(audio) / sr)
 
 
 def synthesise_chapters(
@@ -89,62 +120,69 @@ def synthesise_chapters(
             continue
         pending.extend((i, c.text) for c in chunker.chunk(ch.text))
 
-    batches: list[list[tuple[int, str]]] = [[]]
-    cur_chars = 0
-    for item in pending:
-        if cur_chars and cur_chars + len(item[1]) > BATCH_CHARS:
-            batches.append([])
-            cur_chars = 0
-        batches[-1].append(item)
-        cur_chars += len(item[1])
-    if not batches[0]:
+    if not pending:
         return wav_paths
 
-    log.info("Processing %d chunks in %d batches", len(pending), len(batches))
+    chunks_expected: dict[int, int] = {}
+    for idx, _ in pending:
+        chunks_expected[idx] = chunks_expected.get(idx, 0) + 1
+    chunks_received: dict[int, int] = {}
     ch_wavs: dict[int, list[np.ndarray]] = {}
     sr = 0
 
-    with torch.inference_mode():
-        for bi, batch in enumerate(batches):
-            texts = [t for _, t in batch]
-            _set_seed(VOICE_SEED)
-            t0 = time.monotonic()
+    batch_size = INITIAL_BATCH
+    successes = 0
+    pos = 0
 
-            wavs, sr = model.generate_voice_clone(
-                text=texts,
-                language=["English"] * len(texts),
-                voice_clone_prompt=voice_prompt,
-            )
+    log.info("Processing %d chunks, starting batch size %d", len(pending), batch_size)
 
-            el = time.monotonic() - t0
-            dur = sum(len(w) for w in wavs) / sr
-            log.info(
-                "Batch %d/%d  %d chunks  %.1fs audio  in %.1fs  (RTF: %.2f)",
-                bi + 1,
-                len(batches),
-                len(texts),
-                dur,
-                el,
-                dur / el if el else 0,
-            )
+    while pos < len(pending):
+        batch = pending[pos : pos + batch_size]
+        texts = [t for _, t in batch]
+        t0 = time.monotonic()
 
-            for (idx, _), w in zip(batch, wavs):
-                ch_wavs.setdefault(idx, []).append(w)
-            del wavs
-            if dev == "cuda":
-                torch.cuda.empty_cache()
+        result = _generate_batch(model, texts, voice_prompt)
 
-    # stitch chunks into per-chapter WAVs
-    pause = _silence(sr, PAUSE_SECONDS)
-    for idx, parts in ch_wavs.items():
-        pieces = [x for p in parts for x in (p.astype(np.float32), pause)][:-1]
-        audio = np.concatenate(pieces)
-        sf.write(str(wav_paths[idx]), audio, sr, format="WAV", subtype="FLOAT")
+        if result is None:
+            batch_size = max(MIN_BATCH, batch_size // 2)
+            successes = 0
+            log.info("Reduced batch size to %d", batch_size)
+            if batch_size < MIN_BATCH:
+                raise RuntimeError("OOM even with batch size 1")
+            continue
+
+        wavs, sr = result
+        el = time.monotonic() - t0
+        dur = sum(len(w) for w in wavs) / sr
         log.info(
-            "Wrote ch %d '%s'  %.1fs",
-            starting_chapter + idx + 1,
-            sel[idx].title[:40],
-            len(audio) / sr,
+            "Batch @%d  %d chunks  %.1fs audio  in %.1fs  (RTF: %.2f)  [bs=%d]",
+            pos,
+            len(texts),
+            dur,
+            el,
+            dur / el if el else 0,
+            batch_size,
         )
+
+        for (idx, _), w in zip(batch, wavs):
+            ch_wavs.setdefault(idx, []).append(w)
+            chunks_received[idx] = chunks_received.get(idx, 0) + 1
+
+        pos += len(batch)
+        del wavs, texts, result
+        _free_vram()
+
+        for idx in list(ch_wavs):
+            if chunks_received.get(idx, 0) >= chunks_expected[idx]:
+                _flush_chapter(wav_paths[idx], ch_wavs.pop(idx), sr)
+
+        successes += 1
+        if successes >= GROW_AFTER:
+            batch_size += 1
+            successes = 0
+            log.info("Grew batch size to %d", batch_size)
+
+    for idx, parts in ch_wavs.items():
+        _flush_chapter(wav_paths[idx], parts, sr)
 
     return [p for p in wav_paths if p.exists() and p.stat().st_size > 0]
