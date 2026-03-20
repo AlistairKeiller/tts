@@ -125,14 +125,13 @@ def synthesise_chapters(
 
         el = time.monotonic() - t0
         dur = sum(len(w) for w in wavs) / sr
-        rtf = dur / el if el else 0
         log.info(
             "@%d  %d chunks  %.0fs audio  %.0fs wall  RTF=%.1f  bs=%d",
             pos,
             len(batch),
             dur,
             el,
-            rtf,
+            dur / el if el else 0,
             bs,
         )
 
@@ -157,9 +156,7 @@ def synthesise_chapters(
                     subtype="FLOAT",
                 )
 
-        if rtf < 5.0 and bs > 1:
-            bs = max(1, bs // 2)
-        elif bs < best:
+        if bs < best:
             bs = best
         else:
             best = bs
