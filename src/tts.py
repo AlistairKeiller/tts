@@ -99,9 +99,9 @@ def synthesise_chapters(
     received = {}
     ch_wavs: dict[int, list[np.ndarray]] = {}
     sr = 0
+
     bs = 1
-    best = 1
-    ramping = True
+    ssthresh = float("inf")
     pos = 0
 
     log.info("Processing %d chunks", len(pending))
@@ -119,22 +119,23 @@ def synthesise_chapters(
                 max_new_tokens=2048,
             )
         except torch.cuda.OutOfMemoryError:
-            bs = max(1, bs // 2)
-            ramping = False
+            ssthresh = max(1, bs // 2)
+            bs = ssthresh
             _free()
-            log.warning("OOM → bs=%d", bs)
+            log.warning("OOM → ssthresh=%d, bs=%d", ssthresh, bs)
             continue
 
         el = time.monotonic() - t0
         dur = sum(len(w) for w in wavs) / sr
         log.info(
-            "@%d  %d chunks  %.0fs audio  %.0fs wall  RTF=%.1f  bs=%d",
+            "@%d  %d chunks  %.0fs audio  %.0fs wall  RTF=%.1f  bs=%d  ssthresh=%s",
             pos,
             len(batch),
             dur,
             el,
             dur / el if el else 0,
             bs,
+            ssthresh if ssthresh != float("inf") else "∞",
         )
 
         for (idx, _), w in zip(batch, wavs):
@@ -158,13 +159,11 @@ def synthesise_chapters(
                     subtype="FLOAT",
                 )
 
-        if bs < best:
-            bs = best
-        elif ramping:
-            best = bs
+        if bs < ssthresh:
             bs *= 2
+            if bs > ssthresh:
+                bs = ssthresh
         else:
-            best = bs
             bs += 1
 
     return [p for p in wav_paths if p.exists() and p.stat().st_size > 0]
