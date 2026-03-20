@@ -13,7 +13,7 @@ from epub_parser import Chapter
 log = logging.getLogger(__name__)
 chunker = SentenceChunker(chunk_size=500)
 
-BATCH_CHARS = 62_500
+BATCH_CHARS = 31_250
 PAUSE_SECONDS = 0.3
 VOICE_SEED = 42
 ANCHOR_TEXT = (
